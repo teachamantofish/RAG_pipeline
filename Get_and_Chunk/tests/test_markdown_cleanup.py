@@ -90,14 +90,23 @@ def test_add_language_to_code_fence_detects_json_and_respects_existing():
 
 
 def test_remove_code_line_numbers_strips_leading_digits():
-    text = "1 print('hi')\n99return value\nfoo"
+    # Line numbers are stripped only inside code fences; prose is untouched.
+    text = (
+        "1 leading prose stays\n"
+        "```\n"
+        "1 print('hi')\n"
+        "2: return value\n"
+        "```\n"
+        "foo"
+    )
 
     cleaned = markdown_utils.remove_code_line_numbers(text)
 
     lines = cleaned.splitlines()
-    assert lines[0].startswith(" print('hi')")
-    assert lines[1] == "return value"
-    assert lines[2] == "foo"
+    assert lines[0] == "1 leading prose stays"
+    assert lines[2] == "print('hi')"
+    assert lines[3] == "return value"
+    assert lines[5] == "foo"
 
 
 def test_fix_empty_h1_inserts_outline():

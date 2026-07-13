@@ -19,6 +19,7 @@ PARQUET_COMPRESSION = "zstd"            # Lossless compression codec. 'zstd' pro
 PARQUET_ROW_GROUP_SIZE = 8192           # Optional row group size for Parquet writes (number of rows per group).
 
 # ====== Quality, batching, and serialization I/O ======
+EMBED_BATCH_SIZE = 64                   # Texts per GPU batch for SentenceTransformer.encode. Lower if you hit CUDA OOM.
 NORMALIZE_EMBEDDINGS = True             # Normalize to unit length (L2) before persistence.
 JSON_INDENT = 2                         # 0 or None shrinks file size (harder to read); 2 is human-friendly.
 STRIP_EMBEDDINGS_IN_JSON = True         # Strip embeddings from JSON (set them to None) to keep it lightweight.

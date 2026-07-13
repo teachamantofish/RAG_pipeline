@@ -16,6 +16,15 @@ CRAWL_URL = metadata['CRAWL_URL']
 CWD: Path = ctx['cwd']
 
 # derive paths directly from CSV: CRAWL_URL / BASE_DIR, PDF name = BASE_DIR.pdf
+# For the PDF pipeline CRAWL_URL must be a LOCAL DIRECTORY containing
+# <BASE_DIR>/<BASE_DIR>.pdf — not a web URL. Fail fast with a clear message,
+# because a URL here would silently produce a nonsense path.
+if str(CRAWL_URL).lower().startswith(("http://", "https://")):
+    raise ValueError(
+        f"PARSER=crawlpdf expects CRAWL_URL to be a local directory path, got a URL: {CRAWL_URL}. "
+        "Set CRAWL_URL in run_settings.py to the folder that contains "
+        f"{metadata.get('BASE_DIR', '<BASE_DIR>')}/{metadata.get('BASE_DIR', '<BASE_DIR>')}.pdf"
+    )
 base_dir = metadata['BASE_DIR']
 JOB_CWD = Path(CRAWL_URL) / base_dir
 SRC_PDF     = JOB_CWD / f"{base_dir}.pdf"        # PDF file (trimmed in-place)

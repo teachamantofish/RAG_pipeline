@@ -15,7 +15,6 @@ from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
 from langdetect import detect, LangDetectException
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig
-from crawl4ai.content_filter_strategy import PruningContentFilter
 from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
 from crawl4ai import BrowserConfig
 from crawl4ai.deep_crawling import BFSDeepCrawlStrategy
@@ -35,7 +34,7 @@ CRAWL_URL = metadata['CRAWL_URL']
 
 # Set up global logger with script-specific CSV header; overwrite existing log
 script_base = os.path.splitext(os.path.basename(__file__))[0]
-LOG_HEADER = ["Date", "Level", "Message", "TBD", "TBD"]
+LOG_HEADER = ["Date", "Level", "Message"]
 logger = setup_global_logger(script_name=script_base, log_level='INFO', headers=LOG_HEADER)
 
 
@@ -107,6 +106,11 @@ def _ensure_top_level_h1(markdown_body: str, title: str | None) -> str:
     return f"{heading_line}\n"
 
 
+# Tracks files written during this run so URLs whose last path segment collides
+# (e.g. /guide-a/install and /guide-b/install) don't silently overwrite each other.
+_SAVED_FILE_URLS: dict = {}
+
+
 def save_markdown(markdown_content: str, save_dir: str, url: str, page_title: str | None = None):
     """Save markdown applying standardized front matter merge.
 
@@ -121,6 +125,20 @@ def save_markdown(markdown_content: str, save_dir: str, url: str, page_title: st
     filename = f"{stem}.md"
     filepath = os.path.join(str(save_dir), filename)
 
+    # Collision guard: if another URL already wrote this filename during this
+    # run, disambiguate with a short hash of the full URL instead of overwriting.
+    existing_url = _SAVED_FILE_URLS.get(filepath)
+    if existing_url and existing_url != clean_url:
+        import hashlib
+        suffix = hashlib.sha1(clean_url.encode('utf-8')).hexdigest()[:8]
+        filename = f"{stem}-{suffix}.md"
+        filepath = os.path.join(str(save_dir), filename)
+        logger.warning(
+            f"Filename collision: '{stem}.md' already written for {existing_url}; "
+            f"saving {clean_url} as {filename}"
+        )
+    _SAVED_FILE_URLS[filepath] = clean_url
+
     # Per-page Source URL: override CRAWL_URL so front matter points to the page actually crawled.
     page_meta = dict(metadata)
     page_meta['CRAWL_URL'] = clean_url
@@ -133,144 +151,171 @@ def save_markdown(markdown_content: str, save_dir: str, url: str, page_title: st
     with open(filepath, 'w', encoding='utf-8', newline='\n') as f:
         f.write(full_content)
 
-# Simplified deep crawl function using Crawl4AI's built-in BFSDeepCrawlStrategy
-# All configuration values are read directly from crawlconfig.py for consistency
-def deep_crawl_urls():
-    """
-    Execute deep crawling using Crawl4AI's BFS strategy with all settings from config.
-    Returns list of crawl results with success/failure status and content.
-    """
-    async def crawl():
-        logger.info("Initializing Crawl4AI deep crawler with BFS strategy...")
-        
-        # Set up browser configuration - keeping your existing settings
-        browser_config = BrowserConfig(headless=True, ignore_https_errors=True, verbose=False)
+def _build_browser_config() -> BrowserConfig:
+    return BrowserConfig(headless=True, ignore_https_errors=True, verbose=False)
 
 
+def _build_run_config(deep: bool) -> CrawlerRunConfig:
+    """Build the CrawlerRunConfig from crawlconfig.py settings.
+
+    Args:
+        deep: attach the BFS deep-crawl strategy (start-URL mode). When False
+              (URL-list / sitemap modes) each URL is fetched at depth 0.
+    """
+    deep_crawl_strategy = None
+    if deep:
         # URLPatternFilter - ensure we have a list of patterns
         patterns = URL_PATTERN_FILTERS if isinstance(URL_PATTERN_FILTERS, list) else [URL_PATTERN_FILTERS]
         logger.info(f"URL Pattern Filters: {patterns}")
-        filters = [
-            URLPatternFilter(patterns=patterns),
-        ]
-
         deep_crawl_strategy = BFSDeepCrawlStrategy(
             max_depth=MAX_CRAWL_DEPTH,
             include_external=INCLUDE_EXTERNAL_DOMAIN,
             max_pages=MAX_URLS,
-            filter_chain=FilterChain(filters),
-        )
-        
-        #  analyzes text density, link density, HTML structure, and known patterns 
-        # (like “nav,” “footer”) to systematically prune extraneous or repetitive sections.
-        prune_filter = PruningContentFilter(
-            threshold=0.2,
-            threshold_type="dynamic",
-            min_word_threshold=2
+            filter_chain=FilterChain([URLPatternFilter(patterns=patterns)]),
         )
 
-        md_options = {
-            "ignore_links": IGNORE_LINKS,
-            "ignore_images": IGNORE_IMAGES,
-            "escape_html": ESCAPE_HTML,
-            "body_width": BODY_WIDTH,
-            "skip_internal_links": SKIP_INTERNAL_LINKS,
-            "include_sup_sub": INCLUDE_SUP_SUB,
-            "heading_style": HEADING_STYLE,
-            "list_style": LIST_STYLE,
-            "preserve_tables": PRESERVE_TABLES,
-            "collapse_whitespace": COLLAPSE_WHITESPACE
-        }
-        md_generator = DefaultMarkdownGenerator(options=md_options)
-        run_config = CrawlerRunConfig(
-            markdown_generator=md_generator,
-            remove_forms=REMOVE_FORMS,
-            remove_overlay_elements=REMOVE_OVERLAY_ELEMENTS,
-            excluded_tags=EXCLUDED_TAGS,
-            excluded_selector=EXCLUDED_SELECTOR,
-            exclude_external_links=EXCLUDE_EXTERNAL_LINKS,
-            exclude_social_media_links=EXCLUDE_SOCIAL_MEDIA_LINKS,
-            exclude_domains=EXCLUDE_DOMAINS,
-            exclude_social_media_domains=EXCLUDE_SOCIAL_MEDIA_DOMAINS,
-            deep_crawl_strategy=deep_crawl_strategy, # Use BFS deep crawling
-            #cache_mode=CacheMode.BYPASS,
-            css_selector=CSS_SELECTOR,
-        )
-        # Tracking counters only (no in-memory result aggregation)
-        total_processed = 0
+    md_options = {
+        "ignore_links": IGNORE_LINKS,
+        "ignore_images": IGNORE_IMAGES,
+        "escape_html": ESCAPE_HTML,
+        "body_width": BODY_WIDTH,
+        "skip_internal_links": SKIP_INTERNAL_LINKS,
+        "include_sup_sub": INCLUDE_SUP_SUB,
+        "heading_style": HEADING_STYLE,
+        "list_style": LIST_STYLE,
+        "preserve_tables": PRESERVE_TABLES,
+        "collapse_whitespace": COLLAPSE_WHITESPACE
+    }
+    md_generator = DefaultMarkdownGenerator(options=md_options)
+    return CrawlerRunConfig(
+        markdown_generator=md_generator,
+        remove_forms=REMOVE_FORMS,
+        remove_overlay_elements=REMOVE_OVERLAY_ELEMENTS,
+        excluded_tags=EXCLUDED_TAGS,
+        excluded_selector=EXCLUDED_SELECTOR,
+        exclude_external_links=EXCLUDE_EXTERNAL_LINKS,
+        exclude_social_media_links=EXCLUDE_SOCIAL_MEDIA_LINKS,
+        exclude_domains=EXCLUDE_DOMAINS,
+        exclude_social_media_domains=EXCLUDE_SOCIAL_MEDIA_DOMAINS,
+        deep_crawl_strategy=deep_crawl_strategy,
+        #cache_mode=CacheMode.BYPASS,
+        css_selector=CSS_SELECTOR,
+    )
+
+
+def _process_result(result, allowed_domains: set | None) -> bool:
+    """Validate and save a single crawl result. Returns True when a page was saved."""
+    url = getattr(result, 'url', None)
+    result_domain = urlparse(url).netloc if url else None
+    depth = result.metadata.get('depth', 0) if hasattr(result, 'metadata') else 0
+
+    if url and allowed_domains is not None and result_domain not in allowed_domains:
+        logger.info(f"Skipping external domain: {url} (domain: {result_domain} not in {sorted(allowed_domains)})")
+        return False
+
+    if result.success:
+        md_for_counts = getattr(result, 'markdown', '') or ''
+        num_chars = len(md_for_counts)
+        num_lines_for_log = md_for_counts.count('\n') + 1 if md_for_counts else 0
+        status_field = 'success'
+    else:
+        num_chars = 0
+        num_lines_for_log = 0
+        error_msg = getattr(result, 'error_message', 'Unknown error')
+        status_field = f"error:{error_msg.replace('|',' ')}"
+
+    logger.info(f"url:{url}|depth:{depth}|{status_field}|chars:{num_chars}|lines:{num_lines_for_log}")
+
+    if not result.success:
+        return False
+
+    markdown_content = result.markdown
+    num_chars = len(markdown_content)
+    num_lines = markdown_content.count('\n') + 1 if markdown_content else 0
+    if num_chars < MIN_CONTENT_LENGTH or num_lines < MIN_CONTENT_LINES:
+        logger.info(f"Skipping {url}: content too short (chars: {num_chars}, lines: {num_lines})")
+        logger.info(f"SKIP_SHORT,{url}")
+        return False
+
+    if LANGUAGE and LANGUAGE.strip():
+        try:
+            sample_text = markdown_content[:1000] if len(markdown_content) > 1000 else markdown_content
+            detected_language = detect(sample_text)
+            if detected_language != LANGUAGE.strip():
+                logger.info(f"SKIP_LANGUAGE,{url}")
+                logger.info(f"Skipping {url}: Detected language '{detected_language}' != required '{LANGUAGE}'")
+                return False
+        except LangDetectException:
+            logger.info(f"Skipping {url}: Language could not be detected, skipping to be safe.")
+            return False
+
+    page_html = (
+        getattr(result, 'html', None)
+        or getattr(result, 'cleaned_html', None)
+        or getattr(result, 'raw_html', None)
+        or ''
+    )
+    page_title = _extract_h1_title_from_html(page_html)
+    save_markdown(markdown_content, CWD, url, page_title=page_title)
+    logger.info(f"Successfully saved: {url}")
+    return True
+
+
+# Deep crawl using Crawl4AI's built-in BFSDeepCrawlStrategy.
+# All configuration values are read directly from crawlconfig.py for consistency.
+def deep_crawl_urls():
+    """
+    Execute deep crawling using Crawl4AI's BFS strategy with all settings from config.
+    Returns the number of saved pages.
+    """
+    async def crawl():
+        logger.info("Initializing Crawl4AI deep crawler with BFS strategy...")
+        run_config = _build_run_config(deep=True)
+        allowed_domains = {urlparse(CRAWL_URL).netloc}
         saved_count = 0
 
-        # Execute the deep crawl using Crawl4AI's built-in strategy
         logger.info(f"Starting deep crawl from: {CRAWL_URL}")
-        async with AsyncWebCrawler(config=browser_config) as crawler:
+        async with AsyncWebCrawler(config=_build_browser_config()) as crawler:
             results = await crawler.arun(CRAWL_URL, config=run_config)
             logger.info(f"Deep crawl completed. Processing {len(results)} results...")
-
             for result in results:
-                total_processed += 1
-                url = getattr(result, 'url', None)
-                target_domain = urlparse(CRAWL_URL).netloc if url else None
-                result_domain = urlparse(url).netloc if url else None
-                depth = result.metadata.get('depth', 0) if hasattr(result, 'metadata') else 0
-                error_msg = getattr(result, 'error_message', '')
-
-                if url and result_domain != target_domain:
-                    logger.info(f"Skipping external domain: {url} (domain: {result_domain} != {target_domain})")
-                    continue
-
-                if result.success:
-                    md_for_counts = getattr(result, 'markdown', '') or ''
-                    num_chars = len(md_for_counts)
-                    num_lines_for_log = md_for_counts.count('\n') + 1 if md_for_counts else 0
-                    status_field = 'success'
-                    error_msg = ''
-                else:
-                    num_chars = 0
-                    num_lines_for_log = 0
-                    error_msg = getattr(result, 'error_message', 'Unknown error')
-                    status_field = f"error:{error_msg.replace('|',' ')}"
-
-                logger.info(f"url:{url}|depth:{depth}|{status_field}|chars:{num_chars}|lines:{num_lines_for_log}")
-
-                if not result.success:
-                    continue
-
-                markdown_content = result.markdown
-                num_chars = len(markdown_content)
-                num_lines = markdown_content.count('\n') + 1 if markdown_content else 0
-                if num_chars < MIN_CONTENT_LENGTH or num_lines < MIN_CONTENT_LINES:
-                    logger.info(f"Skipping {url}: content too short (chars: {num_chars}, lines: {num_lines})")
-                    logger.info(f"SKIP_SHORT,{url}")
-                    continue
-
-                if LANGUAGE and LANGUAGE.strip():
-                    try:
-                        sample_text = markdown_content[:1000] if len(markdown_content) > 1000 else markdown_content
-                        detected_language = detect(sample_text)
-                        if detected_language != LANGUAGE.strip():
-                            logger.info(f"SKIP_LANGUAGE,{url}")
-                        if detected_language != LANGUAGE.strip():
-                            logger.info(f"Skipping {url}: Detected language '{detected_language}' != required '{LANGUAGE}'")
-                            continue
-                    except LangDetectException:
-                        logger.info(f"Skipping {url}: Language could not be detected, skipping to be safe.")
-                        continue
-
-                page_html = (
-                    getattr(result, 'html', None)
-                    or getattr(result, 'cleaned_html', None)
-                    or getattr(result, 'raw_html', None)
-                    or ''
-                )
-                page_title = _extract_h1_title_from_html(page_html)
-                save_markdown(markdown_content, CWD, url, page_title=page_title)
-                saved_count += 1
-                logger.info(f"Successfully saved: {url}")
+                if _process_result(result, allowed_domains):
+                    saved_count += 1
 
         logger.info(f"Deep crawl processing completed. Saved pages: {saved_count}")
         return saved_count
 
-    # Execute the async crawl function
+    return asyncio.run(crawl())
+
+
+def crawl_url_list(urls: list) -> tuple:
+    """Crawl an explicit list of URLs (depth 0) inside a single browser session.
+
+    Returns (saved_count, failed_count). Using one AsyncWebCrawler for the whole
+    list avoids relaunching a browser per URL, and depth 0 stops a "URL list"
+    run from fanning out into a deep crawl.
+    """
+    async def crawl():
+        run_config = _build_run_config(deep=False)
+        saved_count = 0
+        failed_count = 0
+
+        logger.info(f"Starting URL-list crawl of {len(urls)} URLs (single browser session, depth 0)")
+        async with AsyncWebCrawler(config=_build_browser_config()) as crawler:
+            results = await crawler.arun_many(urls, config=run_config)
+            for result in results:
+                try:
+                    if _process_result(result, allowed_domains=None):
+                        saved_count += 1
+                    elif not getattr(result, 'success', False):
+                        failed_count += 1
+                except Exception as e:
+                    failed_count += 1
+                    logger.error(f"Error processing {getattr(result, 'url', '?')}: {e}")
+
+        logger.info(f"URL-list crawl completed. Saved: {saved_count}, failed: {failed_count}")
+        return saved_count, failed_count
+
     return asyncio.run(crawl())
 
 
@@ -425,8 +470,6 @@ def main():
     Start the crawl process using configuration values from crawlconfig.py.
     All settings are read directly from config for consistency and simplicity.
     """
-    global CRAWL_URL, MAX_CRAWL_DEPTH
-    
     if USE_URL_LIST:
         # URL List Mode - crawl specific URLs from file
         url_list_path = _resolve_url_list_path(URL_LIST_FILE)
@@ -450,24 +493,18 @@ def main():
             raise ValueError(err_msg)
         
         logger.info(f"URL List Mode: Found {len(urls)} URLs to crawl from {url_list_path}")
-        total_saved = 0
-        
-        # Temporarily override CRAWL_URL for each URL and call deep_crawl_urls
-        original_url = CRAWL_URL
-        
-        for i, url in enumerate(urls, 1):
-            logger.info(f"Processing URL {i}/{len(urls)}: {url}")
-            CRAWL_URL = url
-            try:
-                saved_pages = deep_crawl_urls()
-                total_saved += saved_pages
-                logger.info(f"URL {i} completed. Saved: {saved_pages}")
-            except Exception as e:
-                logger.error(f"Error crawling {url}: {str(e)}")
-        
-        CRAWL_URL = original_url  # Restore original
-        logger.info(f"URL List crawl completed. Total saved pages: {total_saved}")
-        
+        try:
+            total_saved, total_failed = crawl_url_list(urls)
+        except Exception as e:
+            logger.error(f"URL list crawl failed: {str(e)}")
+            logger.error(traceback.format_exc())
+            sys.exit(1)
+
+        logger.info(f"URL List crawl completed. Total saved pages: {total_saved} (failed: {total_failed})")
+        if total_saved == 0:
+            logger.error("URL list crawl saved no pages; failing so the pipeline does not run on empty output.")
+            sys.exit(1)
+
     else:
         # Standard Deep Crawl Mode
         _validate_crawl_url(CRAWL_URL)
@@ -483,20 +520,16 @@ def main():
                 raise ValueError(err_msg)
 
             logger.info(f"Sitemap URL Mode: Crawling {len(sitemap_urls)} URLs discovered under {CRAWL_URL}")
-            total_saved = 0
-            original_url = CRAWL_URL
-            original_depth = MAX_CRAWL_DEPTH
-            MAX_CRAWL_DEPTH = 0
             try:
-                for i, url in enumerate(sitemap_urls, 1):
-                    logger.info(f"Processing sitemap URL {i}/{len(sitemap_urls)}: {url}")
-                    CRAWL_URL = url
-                    saved_pages = deep_crawl_urls()
-                    total_saved += saved_pages
-                logger.info(f"Sitemap URL crawl completed. Total saved pages: {total_saved}")
-            finally:
-                CRAWL_URL = original_url
-                MAX_CRAWL_DEPTH = original_depth
+                total_saved, total_failed = crawl_url_list(sitemap_urls)
+            except Exception as e:
+                logger.error(f"Sitemap URL crawl failed: {str(e)}")
+                logger.error(traceback.format_exc())
+                sys.exit(1)
+            logger.info(f"Sitemap URL crawl completed. Total saved pages: {total_saved} (failed: {total_failed})")
+            if total_saved == 0:
+                logger.error("Sitemap crawl saved no pages; failing so the pipeline does not run on empty output.")
+                sys.exit(1)
             return
 
         logger.info(f"Starting crawl with config: output_dir={CWD}, max_depth={MAX_CRAWL_DEPTH}")
@@ -504,9 +537,15 @@ def main():
             saved_pages = deep_crawl_urls()
             logger.info(f"Crawl completed. Saved pages: {saved_pages}")
         except Exception as e:
+            # Exit non-zero so pipelinemanager does not run downstream steps on
+            # missing/stale output (a previous version swallowed this and exited 0).
             logger.error(f"Error during crawling: {str(e)}")
             logger.error(traceback.format_exc())
             print(f"An error occurred during crawling: {str(e)}")
+            sys.exit(1)
+        if saved_pages == 0:
+            logger.error("Crawl saved no pages; failing so the pipeline does not run on empty output.")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main() 

@@ -16,6 +16,7 @@
           <sl-button variant="primary" id="chunk-run-btn">
             <sl-icon name="play-fill"></sl-icon>
           </sl-button>
+          <sl-button variant="primary" id="chunk-stop-btn" disabled><sl-icon name="stop-fill"></sl-icon></sl-button>
         </div>
 
         <!-- TOKENIZER (read-only expression) -->
@@ -91,7 +92,7 @@
       <div class="config-form-column config-form-column--viewer">
         <div class="config-form-panel-label">File reader</div>
         <div class="fields">
-          <sl-textarea id="chunk-chunkconfig" class="config-file-viewer" resize="auto"
+          <sl-textarea id="chunk-config-viewer" class="config-file-viewer" resize="auto"
             placeholder="Loading file…">
           </sl-textarea>
         </div>

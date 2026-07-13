@@ -13,7 +13,7 @@ def test_prepend_metadata_to_small_chunk(summary_module):
 
     module._prepend_metadata_to_small_chunk(chunk)
 
-    expected_prefix = "Title > Section\r\nChunk info"
+    expected_prefix = "Title > Section\nChunk info"
     assert chunk["content"].startswith(expected_prefix)
 
 
@@ -116,7 +116,7 @@ def test_summarize_summaries_assigns_page_summary(summary_module, fake_openai):
     assert len(calls) == 1
     for chunk in chunks:
         assert chunk["page_summary"].startswith("stub:1:")
-        assert chunk["content"].split("\r\n", 1)[0] == chunk["concat_header_path"]
+        assert chunk["content"].split("\n", 1)[0] == chunk["concat_header_path"]
 
 
 def test_summarize_chunks_populates_chunk_summary(summary_module, fake_openai):

@@ -1,7 +1,7 @@
 {
   "source": {
     "metadata": {
-      "csvPath": "../pipeline/metadataconfig.csv",
+      "csvPath": "../metadataconfig.csv",
       "httpUrl": "/pipeline/metadataconfig.csv",
       "preloadedKey": "metadataconfig.csv",
       "displayName": "metadataconfig.csv"

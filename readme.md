@@ -1,3 +1,14 @@
+# Running the pipeline (current state)
+
+1. Configure the run in `run_settings.py` (data dir `CWD`, `LOG_DIR`, and the `METADATA` block — `PARSER` selects the crawler: `crawlweb`, `crawlpdf`, or `crawlgit`). The `RAG_DATA_ROOT` / `RAG_LOG_DIR` env vars override the paths for other machines.
+2. Per-phase settings live in `Get_and_Chunk/config/*.py` and `VectorDB/config/*.py` (editable via the web UI).
+3. Run everything: `python run_python_entry.py Get_and_Chunk/pipelinemanager.py` — or run individual steps (`1crawlweb.py`, `2markdown_cleanup.py`, `3.00chunker.py`, `4.01summary.py` or `4.00summary_wrapper_hf.py`, `VectorDB/embedding.py`, `VectorDB/upsert_to_vectordb.py`) through the same launcher.
+4. Secrets come from env vars: `HF_TOKEN` (summaries via HF endpoint), `OPENAI_API_KEY` (openai backend), `VECTOR_DB_PASSWORD` (Postgres).
+5. Web UI: `cd Web_App/vite && npm install && npm run dev`, then open http://localhost:5173/index.html.
+6. Tests: `python -m pytest Get_and_Chunk/tests` (offline; external deps are stubbed) and `cd Web_App/vite && npm test`.
+
+---
+
 # End game
 
 

@@ -377,8 +377,6 @@ def remove_code_line_numbers(markdown: str) -> str:
 
         if in_fence:
             new_line = strip_re.sub(r'\1', line)
-            if new_line != line:
-                print(f"DEBUG: Removed line number at {idx}: {repr(line)} -> {repr(new_line)}")
             out.append(new_line)
         else:
             out.append(line)

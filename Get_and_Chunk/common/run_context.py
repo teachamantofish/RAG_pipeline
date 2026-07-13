@@ -1,7 +1,7 @@
+import os
+import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
-
-import sys
 
 try:
     from run_settings import CWD as SETTINGS_CWD, METADATA as SETTINGS_METADATA
@@ -15,7 +15,9 @@ except ModuleNotFoundError:
 
 
 def get_run_context(output_name: Optional[str] = None) -> Dict[str, Any]:
-    cwd = Path(SETTINGS_CWD)
+    # RAG_DATA_ROOT env var overrides run_settings.CWD so the pipeline can run
+    # on machines other than the one the (absolute) configured path came from.
+    cwd = Path(os.getenv("RAG_DATA_ROOT") or SETTINGS_CWD)
     return {
         "cwd": cwd,
         "metadata": dict(SETTINGS_METADATA),

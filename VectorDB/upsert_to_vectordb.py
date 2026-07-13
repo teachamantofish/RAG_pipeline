@@ -13,10 +13,8 @@ All chunk metadata plus the three embedding vectors now live in a single table (
 
 import json
 import os
-import logging
 import sys
 import hashlib
-import re
 from pathlib import Path
 import psycopg2
 from pgvector.psycopg2 import register_vector
@@ -25,6 +23,11 @@ from config.vectorconfig import *
 from config.embedconfig import USE_PARQUET
 from run_settings import CWD
 from Logger.custom_logger import setup_global_logger
+
+# Environment overrides win so secrets never need to live in the config file.
+VECTOR_DB_PASSWORD = os.getenv("VECTOR_DB_PASSWORD", VECTOR_DB_PASSWORD)
+VECTOR_DB_USER = os.getenv("VECTOR_DB_USER", VECTOR_DB_USER)
+VECTOR_DB_HOST = os.getenv("VECTOR_DB_HOST", VECTOR_DB_HOST)
 
 TABLE_NAME = DB_TABLE_NAME if 'DB_TABLE_NAME' in globals() else 'chunks'
 EMBEDDING_FIELDS = (
@@ -222,7 +225,6 @@ def get_pg_connection():
             options='-c search_path=public'  # Explicitly set the schema
         )
         # Register pgvector on this connection
-        from pgvector.psycopg2 import register_vector
         register_vector(conn)
 
         logger.info("Connected to PostgreSQL database.")
@@ -372,12 +374,49 @@ with conn.cursor() as cur:
     print(cur.fetchone())
 """
 
+def ensure_vector_indexes(conn, vector_dim):
+    """Create ANN indexes on the vector columns so retrieval is not a seq scan.
+
+    Prefers HNSW (pgvector >= 0.5); falls back to IVFFlat on older installs.
+    Cosine ops match the normalized embeddings this pipeline produces.
+    """
+    qualified_name = TABLE_NAME if '.' in TABLE_NAME else f"public.{TABLE_NAME}"
+    base = TABLE_NAME.split('.')[-1]
+    columns = ('embedding', 'embedding_summary_chunk', 'embedding_summary_page')
+    for column in columns:
+        index_name = f"{base}_{column}_hnsw_idx"
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"CREATE INDEX IF NOT EXISTS {index_name} ON {qualified_name} "
+                    f"USING hnsw ({column} vector_cosine_ops);"
+                )
+            conn.commit()
+            logger.info("Ensured HNSW index %s", index_name)
+        except Exception as hnsw_err:
+            conn.rollback()
+            index_name = f"{base}_{column}_ivfflat_idx"
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"CREATE INDEX IF NOT EXISTS {index_name} ON {qualified_name} "
+                        f"USING ivfflat ({column} vector_cosine_ops) WITH (lists = 100);"
+                    )
+                conn.commit()
+                logger.info("Ensured IVFFlat index %s (HNSW unavailable: %s)", index_name, hnsw_err)
+            except Exception as ivf_err:
+                conn.rollback()
+                logger.warning(
+                    "Could not create ANN index on %s.%s (queries will seq-scan): %s",
+                    qualified_name, column, ivf_err,
+                )
+
+
 conn = get_pg_connection()
 logger.info(conn.get_dsn_parameters()['dbname'])
 ensure_vector_extension(conn)
 ensure_provenance_table(conn)
 ensure_chunk_table(conn, vector_dimension)
-ensure_provenance_table(conn)
 
 
 # --- Upsert logic and batching implementation ---
@@ -472,7 +511,10 @@ def upsert_chunks(conn, chunks, batch_size=BATCH_SIZE):
             'prov_id': chunk.get('prov_id'),
         }
 
-    # Batch upsert
+    # Batch upsert. Track failures so the script can exit non-zero: a partial
+    # upload must not report success to pipelinemanager / the web UI.
+    failed_batches = 0
+    failed_ids = []
     with conn.cursor() as cur:
         # Ensure the public schema is used
         cur.execute('SET search_path TO public;')
@@ -485,7 +527,16 @@ def upsert_chunks(conn, chunks, batch_size=BATCH_SIZE):
                 logger.info(f"Upserted batch {i//batch_size + 1} ({len(batch)} chunks)")
             except Exception as e:
                 conn.rollback()
+                failed_batches += 1
+                failed_ids.extend(c.get('id') for c in batch)
                 logger.error(f"Failed to upsert batch {i//batch_size + 1}: {e}")
+
+    if failed_batches:
+        logger.error(
+            "Upsert finished with %s failed batch(es); %s chunks not stored. First failed ids: %s",
+            failed_batches, len(failed_ids), failed_ids[:10],
+        )
+    return failed_batches
 
 def upsert_provenance(conn, provenance_data):
     """
@@ -634,7 +685,16 @@ if resolved_prov_id:
         logger.info("Normalized prov_id=%s on %s chunk(s) for consistent FK linkage", resolved_prov_id, reassigned)
 
 # Call the upsert function with validated chunks
-upsert_chunks(conn, valid_chunks)
+failed_batches = upsert_chunks(conn, valid_chunks)
+
+# Create ANN indexes after data load (building indexes on populated tables is
+# faster than maintaining them during the initial bulk insert).
+ensure_vector_indexes(conn, vector_dimension)
+
+if failed_batches:
+    logger.error("Upsert completed with failures; exiting non-zero.")
+    sys.exit(1)
+logger.info("Upsert completed successfully.")
 
 
 

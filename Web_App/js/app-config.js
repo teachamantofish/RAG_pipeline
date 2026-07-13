@@ -2,7 +2,7 @@
   'use strict';
 
   const CONFIG_JSON_PATH = './config/paths.json';
-  const PYWEBVIEW_CONFIG_PATH = '../web/config/paths.json';
+  const PYWEBVIEW_CONFIG_PATH = '../Web_App/config/paths.json';
 
   let configData = null;
   let configPromise = null;

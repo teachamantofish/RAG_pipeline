@@ -17,6 +17,15 @@ from common.adobe_connect_cleanup import (
 )
 from common.run_context import get_run_context
 from Logger.custom_logger import setup_global_logger
+from config.cleanconfig import (
+	ENABLE_STRUCTURE_FIXES,
+	ENABLE_HEADING_NORMALIZATION,
+	ENABLE_LINK_FIXES,
+	ENABLE_CODE_FENCE_FIXES,
+	ENABLE_TABLE_REPAIR,
+	ENABLE_LIST_NORMALIZATION,
+	ENABLE_CUSTOM_REGEX,
+)
 
 ctx = get_run_context()
 CWD: Path = ctx['cwd']
@@ -29,27 +38,36 @@ logger = setup_global_logger(script_name=script_base, log_level='INFO', headers=
 def clean_markdown_file_inplace(md_file):
 	with open(md_file, 'r', encoding='utf-8') as f:
 		markdown = f.read()
-	cleaned = remove_content_before_h1(markdown)
-	cleaned = delete_specified_heading_content(cleaned)
-	cleaned = remove_content_under_heading_below_chunk_min_threshold(cleaned)
-	cleaned = fix_empty_h1(cleaned)
-	cleaned = fix_no_toplevel_heading(cleaned)
-	cleaned = normalize_headings(cleaned)
-	cleaned = add_blank_lines_around_markdown_headings(cleaned)
-	cleaned = add_blank_lines_around_bold_headings(cleaned)
-	cleaned = fix_see_also(cleaned)
-	cleaned = url_formatting_fixer(cleaned)
-	cleaned = dedupe_standalone_url_lines(cleaned)
-	cleaned = add_language_to_code_fence(cleaned)
-	cleaned = remove_prose_duplicate_before_code_fence(cleaned)
-	cleaned = remove_wrapped_table_rows(cleaned)
-	cleaned = repair_broken_table_rows(cleaned)
-	cleaned = normalize_unordered_lists(cleaned)
-	cleaned = normalize_ordered_list_spacing(cleaned)
-	cleaned = normalize_caution_admonitions(cleaned)
-	cleaned = remove_code_line_numbers(cleaned)
-	# Apply generic regex cleanup (CSV-driven) last so earlier structural removals don't interfere
-	cleaned = custom_regex(cleaned)
+	cleaned = markdown
+	if ENABLE_STRUCTURE_FIXES:
+		cleaned = remove_content_before_h1(cleaned)
+		cleaned = delete_specified_heading_content(cleaned)
+		cleaned = remove_content_under_heading_below_chunk_min_threshold(cleaned)
+		cleaned = fix_empty_h1(cleaned)
+		cleaned = fix_no_toplevel_heading(cleaned)
+	if ENABLE_HEADING_NORMALIZATION:
+		cleaned = normalize_headings(cleaned)
+		cleaned = add_blank_lines_around_markdown_headings(cleaned)
+		cleaned = add_blank_lines_around_bold_headings(cleaned)
+	if ENABLE_LINK_FIXES:
+		cleaned = fix_see_also(cleaned)
+		cleaned = url_formatting_fixer(cleaned)
+		cleaned = dedupe_standalone_url_lines(cleaned)
+	if ENABLE_CODE_FENCE_FIXES:
+		cleaned = add_language_to_code_fence(cleaned)
+		cleaned = remove_prose_duplicate_before_code_fence(cleaned)
+	if ENABLE_TABLE_REPAIR:
+		cleaned = remove_wrapped_table_rows(cleaned)
+		cleaned = repair_broken_table_rows(cleaned)
+	if ENABLE_LIST_NORMALIZATION:
+		cleaned = normalize_unordered_lists(cleaned)
+		cleaned = normalize_ordered_list_spacing(cleaned)
+		cleaned = normalize_caution_admonitions(cleaned)
+	if ENABLE_CODE_FENCE_FIXES:
+		cleaned = remove_code_line_numbers(cleaned)
+	if ENABLE_CUSTOM_REGEX:
+		# Apply generic regex cleanup (CSV-driven) last so earlier structural removals don't interfere
+		cleaned = custom_regex(cleaned)
 	# Ensure LF newlines are written to disk so CSV-driven replacements (e.g., CRLF->LF) persist.
 	with open(md_file, 'w', encoding='utf-8', newline='\n') as f:
 		f.write(cleaned)

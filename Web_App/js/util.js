@@ -116,6 +116,14 @@
     return lines.join(CSV_LINE_ENDING) + CSV_LINE_ENDING;
   }
 
+  function replaceLastSegment(basePath, fileName) {
+    const separator = basePath.includes('\\') && !basePath.includes('/') ? '\\' : '/';
+    const parts = basePath.split(/[\\/]/);
+    if (!parts.length) return null;
+    parts[parts.length - 1] = fileName;
+    return parts.join(separator);
+  }
+
   function resolveTargetPath(context, fileName) {
     if (!context || !context.sourceConfig) {
       console.warn('[SourceActions] sourceConfig is required to resolve save target.');
@@ -132,14 +140,30 @@
       console.warn('[SourceActions] Neither saveTarget nor csvPath is defined on sourceConfig.');
       return null;
     }
-    const separator = basePath.includes('\\') && !basePath.includes('/') ? '\\' : '/';
-    const parts = basePath.split(/[\\/]/);
-    if (!parts.length) {
-      console.warn('[SourceActions] Unable to derive save path components.');
-      return null;
+    return replaceLastSegment(basePath, fileName);
+  }
+
+  function resolveHttpTargetUrl(context, fileName) {
+    const config = context && context.sourceConfig;
+    if (!config || typeof config.httpUrl !== 'string') return null;
+    return replaceLastSegment(config.httpUrl, fileName);
+  }
+
+  async function saveViaHttp(url, csvText) {
+    const resp = await global.fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/csv; charset=utf-8' },
+      body: csvText,
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '');
+      throw new Error(`Save failed: HTTP ${resp.status}${detail ? ` — ${detail}` : ''}`);
     }
-    parts[parts.length - 1] = fileName;
-    return parts.join(separator);
+    const result = await resp.json().catch(() => null);
+    if (result && result.success === false) {
+      throw new Error(result.error || 'Save failed');
+    }
+    return url;
   }
 
   async function saveCheckRows(context, options = {}) {
@@ -159,34 +183,30 @@
       };
     }
 
-    if (!hasPywebviewApi()) {
-      console.warn('[SourceActions] pywebview save_file API is required but not available.');
-      throw new Error('pywebview save_file API is not available.');
-    }
-
-    const targetPath = options.targetPath || resolveTargetPath(context, fileName);
-    if (!targetPath) {
-      console.warn('[SourceActions] Unable to resolve target path for selected rows.');
-      throw new Error('No target path resolved for selected rows.');
-    }
-
     const csvText = buildCsv(headers, rows, includeHeaders);
-    const result = global.AppBridge && typeof global.AppBridge.saveFile === 'function'
-      ? await global.AppBridge.saveFile(targetPath, csvText)
-      : await global.pywebview.api.save_file(targetPath, csvText);
-    if (!result || result.success !== true) {
-      const reason = (result && result.error) || 'Unknown error';
-      console.warn('[SourceActions] pywebview save_file reported failure.', reason);
-      throw new Error(reason);
+
+    // Prefer pywebview when hosted in the desktop shell; otherwise save over
+    // HTTP through the dev-server write proxy (the app's primary runtime).
+    if (hasPywebviewApi()) {
+      const targetPath = options.targetPath || resolveTargetPath(context, fileName);
+      if (!targetPath) {
+        throw new Error('No target path resolved for selected rows.');
+      }
+      const result = global.AppBridge && typeof global.AppBridge.saveFile === 'function'
+        ? await global.AppBridge.saveFile(targetPath, csvText)
+        : await global.pywebview.api.save_file(targetPath, csvText);
+      if (!result || result.success !== true) {
+        throw new Error((result && result.error) || 'Unknown error');
+      }
+      return { saved: true, count, fileName, path: result.path || targetPath, csv: csvText };
     }
 
-    return {
-      saved: true,
-      count,
-      fileName,
-      path: result.path || targetPath,
-      csv: csvText,
-    };
+    const httpUrl = options.targetUrl || resolveHttpTargetUrl(context, fileName);
+    if (!httpUrl) {
+      throw new Error('No HTTP save target available (sourceConfig.httpUrl missing).');
+    }
+    const savedUrl = await saveViaHttp(httpUrl, csvText);
+    return { saved: true, count, fileName, path: savedUrl, csv: csvText };
   }
 
   function countSelectedCheckboxes(context) {

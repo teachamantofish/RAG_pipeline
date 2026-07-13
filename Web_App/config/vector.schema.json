@@ -1,6 +1,6 @@
 {
   "configFile": "VectorDB/config/vectorconfig.py",
-  "runScript": "VectorDB/upsert_to_vectorydb.py",
+  "runScript": "VectorDB/upsert_to_vectordb.py",
   "phase": "vector",
   "fields": [
     {

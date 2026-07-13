@@ -14,7 +14,7 @@
  * @param {string} raw - The right-hand side of an assignment, trimmed.
  * @returns {{ value: *, isExpression: boolean }}
  */
-function parseValue(raw) {
+export function parseValue(raw) {
   // Remove inline comment (but not inside strings)
   const stripped = stripInlineComment(raw);
 

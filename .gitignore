@@ -81,3 +81,9 @@ desktop.ini
 # -----------------------------
 *.swp
 *.swo
+
+# -----------------------------
+# Pipeline artifacts
+# -----------------------------
+Web_App/config/backups/
+.hf_cache/

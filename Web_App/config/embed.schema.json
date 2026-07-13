@@ -25,21 +25,35 @@
       "key": "EMBED_LOG_LEVEL",
       "label": "Embed Log Level",
       "type": "select",
-      "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
+      "options": [
+        "DEBUG",
+        "INFO",
+        "WARNING",
+        "ERROR"
+      ],
       "help": "Logging verbosity for the embedding step."
     },
     {
       "key": "EMBED_COMPUTE_PRECISION",
       "label": "Compute Precision",
       "type": "select",
-      "options": ["float32", "float16", "bfloat16", "tf32"],
+      "options": [
+        "float32",
+        "float16",
+        "bfloat16",
+        "tf32"
+      ],
       "help": "Model parameter and math precision during forward pass on GPU. Lower precision (fp16/bf16) is faster with negligible retrieval quality impact."
     },
     {
       "key": "EMBED_OUTPUT_PRECISION",
       "label": "Output Precision",
       "type": "select",
-      "options": ["float32", "float16", "bfloat16"],
+      "options": [
+        "float32",
+        "float16",
+        "bfloat16"
+      ],
       "help": "Dtype used for vectors persisted to disk. pgvector and most tools expect float32."
     },
     {
@@ -77,7 +91,11 @@
       "key": "PARQUET_COMPRESSION",
       "label": "Parquet Compression",
       "type": "select",
-      "options": ["zstd", "snappy", "gzip"],
+      "options": [
+        "zstd",
+        "snappy",
+        "gzip"
+      ],
       "help": "Lossless compression codec for Parquet. 'zstd' provides a good ratio/speed trade-off."
     },
     {
@@ -85,7 +103,14 @@
       "label": "Parquet Row Group Size",
       "type": "number",
       "min": 1,
-      "help": "Number of rows per Parquet row group. Smaller groups improve parallelism; larger groups improve compression. Typical: 4096–65536."
+      "help": "Number of rows per Parquet row group. Smaller groups improve parallelism; larger groups improve compression. Typical: 4096\u201365536."
+    },
+    {
+      "key": "EMBED_BATCH_SIZE",
+      "label": "Batch Size",
+      "type": "number",
+      "min": 1,
+      "help": "Texts per GPU batch for SentenceTransformer.encode. Higher is faster; lower it if you hit CUDA out-of-memory."
     },
     {
       "key": "NORMALIZE_EMBEDDINGS",
@@ -115,8 +140,9 @@
     {
       "key": "MAX_EMBED_CHUNKS",
       "label": "Max Embed Chunks",
-      "type": "text",
-      "help": "For test runs: limit to N chunks. Set to None to embed all chunks."
+      "type": "number",
+      "help": "For test runs: limit to N chunks. Leave empty (None) to embed all chunks.",
+      "min": 1
     },
     {
       "key": "CHUNK_SAMPLE_SEED",
@@ -129,7 +155,10 @@
       "key": "CHUNK_SAMPLE_MODE",
       "label": "Chunk Sample Mode",
       "type": "select",
-      "options": ["head", "random"],
+      "options": [
+        "head",
+        "random"
+      ],
       "help": "How to choose the subset when MAX_EMBED_CHUNKS is set. 'head' = first N (stable, fast); 'random' = uniform sample."
     },
     {

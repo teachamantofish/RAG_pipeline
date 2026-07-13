@@ -155,3 +155,29 @@ describe('serializeValue', () => {
     expect(serializeValue('say "hi"')).toBe('"say \\"hi\\""');
   });
 });
+
+describe('writeConfig expression guard', () => {
+  it('refuses to quote a Python expression value', async () => {
+    const { writeConfig } = await import('../../../js/config-writer.js');
+    const original = 'EXCLUDED_TAGS = ["form", "script"]  # tags to drop\n';
+    // Model round-trips expressions as strings; writing must not corrupt them.
+    const result = writeConfig(original, { EXCLUDED_TAGS: '["form", "script"]' }, [
+      { key: 'EXCLUDED_TAGS', type: 'text' },
+    ]);
+    expect(result).toBe(original);
+  });
+
+  it('still writes plain scalar changes', async () => {
+    const { writeConfig } = await import('../../../js/config-writer.js');
+    const original = 'MAX_URLS = 500  # cap\n';
+    const result = writeConfig(original, { MAX_URLS: 250 }, [{ key: 'MAX_URLS', type: 'number' }]);
+    expect(result).toBe('MAX_URLS = 250  # cap\n');
+  });
+
+  it('serializes null as None for nullable numbers', async () => {
+    const { writeConfig } = await import('../../../js/config-writer.js');
+    const original = 'TESTINGMODE = 5\n';
+    const result = writeConfig(original, { TESTINGMODE: null }, [{ key: 'TESTINGMODE', type: 'number' }]);
+    expect(result).toBe('TESTINGMODE = None\n');
+  });
+});

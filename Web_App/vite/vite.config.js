@@ -7,13 +7,23 @@ import { spawn } from 'child_process'
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
 const repoRoot = path.resolve(projectRoot, '..')
-const pipelineDir = path.resolve(projectRoot, '..', 'pipeline')
+// '/pipeline/' serves data files (metadata CSVs) that live at the repo root.
+// A previous version pointed this at <repo>/pipeline, which does not exist.
+const pipelineDir = repoRoot
 const getAndChunkDir = path.resolve(projectRoot, '..', 'Get_and_Chunk')
 const vectorDBDir = path.resolve(projectRoot, '..', 'VectorDB')
 const appPathsPath = path.resolve(projectRoot, 'config', 'paths.json')
 const appPaths = JSON.parse(fs.readFileSync(appPathsPath, 'utf8'))
 const backupsRoot = path.resolve(projectRoot, 'config', 'backups')
 const activeScriptProcesses = new Map()
+// Retains the last run's state per script for /api/run-status polling.
+const scriptRunStates = new Map()
+const MAX_RUN_OUTPUT_CHARS = 512 * 1024
+
+function isInsideDir(baseDir, targetPath) {
+  const rel = path.relative(baseDir, targetPath)
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+}
 
 const staticBuildEntries = [
   'home.html',
@@ -112,8 +122,9 @@ function createBackupSnapshot(targetPath, callback) {
  * @param {string} urlPrefix - URL path prefix (e.g. '/pipeline/' or '/Get_and_Chunk/').
  * @param {string} baseDir - Absolute directory to serve from.
  * @param {string} pluginName - Vite plugin name.
+ * @param {string[]} [allowedExts] - Servable file extensions (default: .py/.json/.csv).
  */
-function createFileProxy(urlPrefix, baseDir, pluginName) {
+function createFileProxy(urlPrefix, baseDir, pluginName, allowedExts = ['.py', '.json', '.csv']) {
   return {
     name: pluginName,
     apply: 'serve',
@@ -133,12 +144,17 @@ function createFileProxy(urlPrefix, baseDir, pluginName) {
           return
         }
 
-        const targetPath = path.join(baseDir, relativePath)
-        const normalized = path.normalize(targetPath)
+        const normalized = path.normalize(path.join(baseDir, relativePath))
 
-        if (!normalized.startsWith(baseDir)) {
+        if (!isInsideDir(baseDir, normalized)) {
           res.statusCode = 403
           res.end('Access to the requested resource is forbidden.')
+          return
+        }
+
+        if (!allowedExts.includes(path.extname(normalized).toLowerCase())) {
+          res.statusCode = 403
+          res.end('File type not served by this proxy.')
           return
         }
 
@@ -165,9 +181,15 @@ function createFileProxy(urlPrefix, baseDir, pluginName) {
 
 /**
  * Write-capable proxy: accepts PUT requests to save file content back to disk.
- * Only allows writes to mapped directories (Get_and_Chunk, pipeline) during dev.
+ *
+ * Writes are restricted to an explicit allowlist of relative-path patterns —
+ * a previous version accepted any .py under the mapped directory, which meant
+ * the browser could overwrite the pipeline scripts themselves (and then run
+ * them via /api/run-script).
+ *
+ * @param {RegExp[]} allowedPatterns - Tested against the forward-slash relative path.
  */
-function createWriteProxy(urlPrefix, baseDir, pluginName) {
+function createWriteProxy(urlPrefix, baseDir, pluginName, allowedPatterns) {
   return {
     name: pluginName,
     apply: 'serve',
@@ -186,20 +208,18 @@ function createWriteProxy(urlPrefix, baseDir, pluginName) {
           return
         }
 
-        const targetPath = path.join(baseDir, relativePath)
-        const normalized = path.normalize(targetPath)
+        const normalized = path.normalize(path.join(baseDir, relativePath))
 
-        if (!normalized.startsWith(baseDir)) {
+        if (!isInsideDir(baseDir, normalized)) {
           res.statusCode = 403
           res.end(JSON.stringify({ success: false, error: 'Forbidden.' }))
           return
         }
 
-        // Only allow writing to .py and .json config files
-        const ext = path.extname(normalized).toLowerCase()
-        if (ext !== '.py' && ext !== '.json') {
+        const relForwardSlash = path.relative(baseDir, normalized).replace(/\\/g, '/')
+        if (!allowedPatterns.some(p => p.test(relForwardSlash))) {
           res.statusCode = 403
-          res.end(JSON.stringify({ success: false, error: `Writing ${ext} files is not allowed.` }))
+          res.end(JSON.stringify({ success: false, error: `Writing ${relForwardSlash} is not allowed.` }))
           return
         }
 
@@ -231,7 +251,15 @@ function createWriteProxy(urlPrefix, baseDir, pluginName) {
 }
 
 function pipelineFileProxy() {
-  return createFileProxy('/pipeline/', pipelineDir, 'pipeline-file-proxy')
+  // Repo-root data files (metadata CSVs) only.
+  return createFileProxy('/pipeline/', pipelineDir, 'pipeline-file-proxy', ['.csv'])
+}
+
+function pipelineWriteProxy() {
+  // Lets the Source tab save selected rows next to the metadata CSV.
+  return createWriteProxy('/pipeline/', pipelineDir, 'pipeline-write-proxy', [
+    /^[\w.-]+\.csv$/,
+  ])
 }
 
 function getAndChunkFileProxy() {
@@ -239,7 +267,9 @@ function getAndChunkFileProxy() {
 }
 
 function getAndChunkWriteProxy() {
-  return createWriteProxy('/Get_and_Chunk/', getAndChunkDir, 'get-and-chunk-write-proxy')
+  return createWriteProxy('/Get_and_Chunk/', getAndChunkDir, 'get-and-chunk-write-proxy', [
+    /^config\/[\w.-]+\.(py|json)$/,
+  ])
 }
 
 function vectorDBFileProxy() {
@@ -247,7 +277,9 @@ function vectorDBFileProxy() {
 }
 
 function vectorDBWriteProxy() {
-  return createWriteProxy('/VectorDB/', vectorDBDir, 'vectordb-write-proxy')
+  return createWriteProxy('/VectorDB/', vectorDBDir, 'vectordb-write-proxy', [
+    /^config\/[\w.-]+\.(py|json)$/,
+  ])
 }
 
 /**
@@ -317,8 +349,10 @@ function createRunSettingsApi() {
 /**
  * Run-script API: POST /api/run-script
  * Body: { "script": "Get_and_Chunk/3.00chunker.py" }
- * Spawns Python subprocess and streams combined stdout+stderr back as JSON.
- * Only available during dev (apply: 'serve').
+ * Spawns the Python subprocess and responds IMMEDIATELY with { started: true }.
+ * Progress and completion are read via GET /api/run-status — a previous
+ * version held the HTTP request open for the entire (possibly hours-long)
+ * run, so a dropped connection lost the result.
  */
 function createRunScriptApi() {
   // Allowed script prefixes (relative to repo root)
@@ -396,32 +430,88 @@ function createRunScriptApi() {
           })
           activeScriptProcesses.set(script, child)
 
-          let output = ''
-          child.stdout.on('data', d => { output += d.toString() })
-          child.stderr.on('data', d => { output += d.toString() })
+          const state = { output: '', exitCode: null, done: false, error: null, startedAt: Date.now() }
+          scriptRunStates.set(script, state)
+
+          const appendOutput = d => {
+            state.output += d.toString()
+            if (state.output.length > MAX_RUN_OUTPUT_CHARS) {
+              state.output = state.output.slice(-MAX_RUN_OUTPUT_CHARS)
+            }
+          }
+          child.stdout.on('data', appendOutput)
+          child.stderr.on('data', appendOutput)
 
           child.on('error', err => {
             if (activeScriptProcesses.get(script) === child) {
               activeScriptProcesses.delete(script)
             }
-            res.statusCode = 500
-            res.setHeader('Content-Type', 'application/json')
-            res.end(JSON.stringify({ success: false, error: `Failed to spawn: ${err.message}` }))
+            state.done = true
+            state.error = `Failed to spawn: ${err.message}`
           })
 
           child.on('close', code => {
             if (activeScriptProcesses.get(script) === child) {
               activeScriptProcesses.delete(script)
             }
-            res.setHeader('Content-Type', 'application/json')
-            res.statusCode = code === 0 ? 200 : 500
-            res.end(JSON.stringify({
-              success: code === 0,
-              exitCode: code,
-              output: output,
-            }))
+            state.exitCode = code
+            state.done = true
           })
+
+          // Respond immediately; the client polls /api/run-status.
+          res.statusCode = 200
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ success: true, started: true, script }))
         })
+      })
+    },
+  }
+}
+
+/**
+ * Run-status API: GET /api/run-status?script=Get_and_Chunk/3.00chunker.py
+ * Returns the current/last run state for a script started via /api/run-script.
+ */
+function createRunStatusApi() {
+  return {
+    name: 'run-status-api',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url || !req.url.startsWith('/api/run-status') || req.method !== 'GET') {
+          next()
+          return
+        }
+
+        let parsed
+        try {
+          parsed = new URL(req.url, 'http://localhost')
+        } catch {
+          res.statusCode = 400
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ success: false, error: 'Invalid request URL.' }))
+          return
+        }
+
+        const script = parsed.searchParams.get('script') || ''
+        const state = scriptRunStates.get(script)
+        res.setHeader('Content-Type', 'application/json')
+        if (!state) {
+          res.statusCode = 200
+          res.end(JSON.stringify({ success: true, known: false }))
+          return
+        }
+        res.statusCode = 200
+        res.end(JSON.stringify({
+          success: true,
+          known: true,
+          running: !state.done,
+          done: state.done,
+          exitCode: state.exitCode,
+          error: state.error,
+          output: state.output,
+          startedAt: state.startedAt,
+        }))
       })
     },
   }
@@ -624,12 +714,14 @@ export default defineConfig({
   plugins: [
     FullReload(['**/*.html']), // reload on ANY html change
     pipelineFileProxy(),
+    pipelineWriteProxy(),
     getAndChunkFileProxy(),
     getAndChunkWriteProxy(),
     vectorDBFileProxy(),
     vectorDBWriteProxy(),
     createRunSettingsApi(),
     createRunScriptApi(),
+    createRunStatusApi(),
     createStopScriptApi(),
     createLogTailApi(),
     copyStaticBuildResources(),

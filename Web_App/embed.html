@@ -7,6 +7,7 @@
           <sl-button variant="primary" id="embed-save-btn"><sl-icon name="floppy"></sl-icon></sl-button>
           <sl-button variant="primary" id="embed-reload-btn"><sl-icon name="trash"></sl-icon></sl-button>
           <sl-button variant="primary" id="embed-run-btn"><sl-icon name="play-fill"></sl-icon></sl-button>
+          <sl-button variant="primary" id="embed-stop-btn" disabled><sl-icon name="stop-fill"></sl-icon></sl-button>
         </div>
         <div class="config-field"><sl-radio-group id="embed-enable_embedding" data-config-key="ENABLE_EMBEDDING" size="small" label="Enable Embedding" name="embed_enable_embedding" value="true"><sl-radio value="true">True</sl-radio><sl-radio value="false">False</sl-radio></sl-radio-group></div>
         <div class="config-field"><sl-input id="embed-embed_model" data-config-key="EMBED_MODEL" label="Embed Model" type="text"></sl-input></div>
@@ -24,12 +25,13 @@
         <div class="config-field"><sl-select id="embed-parquet_compression" data-config-key="PARQUET_COMPRESSION" label="Parquet Compression"><sl-option value="zstd">zstd</sl-option><sl-option value="snappy">snappy</sl-option><sl-option value="gzip">gzip</sl-option></sl-select></div>
         <div class="config-field"><sl-input id="embed-parquet_row_group_size" data-config-key="PARQUET_ROW_GROUP_SIZE" label="Parquet Row Group Size" type="number" min="1"></sl-input></div>
         <div class="section-divider"><hr><span>Quality &amp; Serialization</span><hr></div>
+        <div class="config-field"><sl-input id="embed-embed_batch_size" data-config-key="EMBED_BATCH_SIZE" label="Batch Size" type="number" min="1"></sl-input></div>
         <div class="config-field"><sl-radio-group id="embed-normalize_embeddings" data-config-key="NORMALIZE_EMBEDDINGS" size="small" label="Normalize Embeddings" name="embed_normalize_embeddings" value="true"><sl-radio value="true">True</sl-radio><sl-radio value="false">False</sl-radio></sl-radio-group></div>
         <div class="config-field"><sl-input id="embed-json_indent" data-config-key="JSON_INDENT" label="JSON Indent" type="number" min="0"></sl-input></div>
         <div class="config-field"><sl-radio-group id="embed-strip_embeddings_in_json" data-config-key="STRIP_EMBEDDINGS_IN_JSON" size="small" label="Strip Embeddings in JSON" name="embed_strip_embeddings_in_json" value="true"><sl-radio value="true">True</sl-radio><sl-radio value="false">False</sl-radio></sl-radio-group></div>
         <div class="config-field"><sl-radio-group id="embed-provenance_required" data-config-key="PROVENANCE_REQUIRED" size="small" label="Provenance Required" name="embed_provenance_required" value="true"><sl-radio value="true">True</sl-radio><sl-radio value="false">False</sl-radio></sl-radio-group></div>
         <div class="section-divider"><hr><span>Sampling Controls</span><hr></div>
-        <div class="config-field"><sl-input id="embed-max_embed_chunks" data-config-key="MAX_EMBED_CHUNKS" label="Max Embed Chunks" type="text"></sl-input></div>
+        <div class="config-field"><sl-input id="embed-max_embed_chunks" data-config-key="MAX_EMBED_CHUNKS" label="Max Embed Chunks (empty = all)" type="number" min="1"></sl-input></div>
         <div class="config-field"><sl-input id="embed-chunk_sample_seed" data-config-key="CHUNK_SAMPLE_SEED" label="Chunk Sample Seed" type="number" min="0"></sl-input></div>
         <div class="config-field"><sl-select id="embed-chunk_sample_mode" data-config-key="CHUNK_SAMPLE_MODE" label="Chunk Sample Mode"><sl-option value="head">head</sl-option><sl-option value="random">random</sl-option></sl-select></div>
         <div class="section-divider"><hr><span>Hardware</span><hr></div>

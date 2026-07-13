@@ -12,6 +12,18 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def _ensure_stub_modules() -> None:
     """Register lightweight stand-ins for optional dependencies."""
+    if "tiktoken" not in sys.modules:
+        # Stub tiktoken so tests run offline: the real package downloads its
+        # encoding files from the network on first use.
+        tiktoken = types.ModuleType("tiktoken")
+
+        class _StubEncoding:
+            def encode(self, text: str):
+                return text.split() if text else []
+
+        tiktoken.get_encoding = lambda _name: _StubEncoding()
+        sys.modules["tiktoken"] = tiktoken
+
     if "llama_index" not in sys.modules:
         llama_index = types.ModuleType("llama_index")
         core = types.ModuleType("llama_index.core")
@@ -65,6 +77,11 @@ def _ensure_stub_modules() -> None:
         )
         openai = types.SimpleNamespace(chat=chat_module)
         sys.modules["openai"] = openai
+
+
+# Register stubs at import time: test modules import pipeline modules during
+# collection (before any fixture runs), and the real deps would hit the network.
+_ensure_stub_modules()
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -10,7 +10,7 @@
  *   writeConfig(originalText, patch, schema) → string
  */
 
-import { serializeValue } from './config-parser.js';
+import { serializeValue, parseValue } from './config-parser.js';
 
 /**
  * Apply a patch to the original config text, replacing only assignment values
@@ -56,6 +56,22 @@ export function writeConfig(originalText, patch, schemaFields) {
 
         if (serialized === origRawValue) {
           // Value unchanged — keep original line as-is
+          result.push(line);
+          continue;
+        }
+
+        // Expression guard: if the original RHS is a Python expression the
+        // parser cannot represent (list, tuple, Path(...), f-string, ...),
+        // re-serializing the model's string form would wrap it in quotes and
+        // corrupt the config. Keep the original line instead.
+        const origParsed = parseValue(origRawValue);
+        if (origParsed.isExpression) {
+          if (String(newVal) !== origRawValue) {
+            console.warn(
+              `[config-writer] "${key}" holds a Python expression (${origRawValue}); ` +
+              'refusing to overwrite it with a quoted string. Edit the file directly.'
+            );
+          }
           result.push(line);
           continue;
         }

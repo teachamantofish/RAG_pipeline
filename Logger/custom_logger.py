@@ -32,7 +32,9 @@ def setup_global_logger(
     ):
         raise ValueError("headers must start with ['Date','Level','Msg'|'Message']")
 
-    log_path = Path(LOG_DIR) / f"a_{os.path.splitext(script_name)[0]}.log"
+    # RAG_LOG_DIR env var overrides run_settings.LOG_DIR for portability.
+    log_dir = os.getenv("RAG_LOG_DIR") or LOG_DIR
+    log_path = Path(log_dir) / f"a_{os.path.splitext(script_name)[0]}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     class CSVFormatter(logging.Formatter):
@@ -75,6 +77,14 @@ def setup_global_logger(
     logger = logging.getLogger(logger_name)
     logger.setLevel(log_level)
     logger.propagate = False
+    # Close existing handlers before dropping them: clearing alone leaks the
+    # open file descriptors (and locks the log file on Windows) when this is
+    # called more than once per process.
+    for handler in list(logger.handlers):
+        try:
+            handler.close()
+        except Exception:
+            pass
     logger.handlers.clear()
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)

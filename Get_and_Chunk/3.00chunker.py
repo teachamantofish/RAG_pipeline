@@ -1,10 +1,10 @@
 """Heading-first chunking script used by the pipeline.
 
-This module walks LlamaIndex's Markdown nodes, rebuilds a document-level
-heading hierarchy, and emits a JSON file of chunks sized for downstream
-retrieval/embedding.  Oversized headings are trimmed by peeling code blocks
-and tables into dedicated component chunks, and the script keeps track of
-relationships such as prev/next pointers and provenance metadata.
+This module parses each markdown file into heading blocks, rebuilds the
+document-level heading hierarchy, and emits a JSON file of chunks sized for
+downstream retrieval/embedding.  Oversized headings are trimmed by peeling
+code blocks and tables into dedicated component chunks, and the script keeps
+track of relationships such as prev/next pointers and provenance metadata.
 
 ## Principles
 
@@ -29,7 +29,7 @@ tables—into standalone chunks until the heading fits.
 Chunks under a certain threshold are handled in the summary phase. Short chunks have summaries
 prepended to their content to provide more context during retrieval.
 
-Empty headings should be chunked. However, "embedding" should be set to "false" so that the embedding
+Empty headings should be chunked. However, "embed" is set to False so that the embedding
 script skips them. This allows us to retain the document structure without bloating the vector DB with
 empty chunks. We also preserve the concat_header_path so that the UI can display the full context.
 """
@@ -45,13 +45,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Deque
 from datetime import datetime
-from llama_index.core import SimpleDirectoryReader, Document
-from llama_index.core.node_parser import MarkdownNodeParser
 from pygments.lexers import guess_lexer, ClassNotFound
 
 from config.chunkerconfig import *
-from config.summaryconfig import *
-from config.embedconfig import *
 from common.run_context import get_run_context
 from Logger.custom_logger import setup_global_logger
 from common.token_counter import main as run_token_counter
@@ -199,171 +195,106 @@ def _extract_heading_blocks(md_body: str) -> Deque[Tuple[str, int, str]]:
 
     return deque(blocks)
 
-# ----------------- LlamaIndex → linear node stream -----------------
-def _extract_heading(meta: Dict) -> Tuple[str, int]:
-    """
-    Extract heading text/level from an ATX-style heading string (e.g., "## Title").
-    Returns ("", 999) when no heading is present.
-    """
-    raw = str(meta.get("heading") or "").strip()
-    match = re.match(r"^(#{1,6})\s+(.+)$", raw)
-    if not match:
-        return "", 999
+# ----------------- File loading -----------------
+def load_markdown_files() -> List[Tuple[str, str]]:
+    """Return [(relative filename, raw markdown text)] in stable order.
 
-    level = len(match.group(1))
-    heading = match.group(2).strip()
-    return heading, level
-
-
-def _extract_filename(meta: Dict) -> str:
-    # Accept only 'filename' or 'file_path' (no other fallbacks). Normalize to
-    # a CWD-relative path when possible. Raise if both keys are missing.
-    raw = meta.get("file_path", "")
-    if not raw:
-        raise ValueError("meta['file_path'] is missing or empty")
-
-    p = Path(raw)
-    try:
-        return str(p.resolve(strict=False).relative_to(CWD.resolve())).replace("\\", "/")
-    except Exception:
-        # return the original file_path string (normalized slashes) as the fallback
-        return str(raw).replace("\\", "/")
-    
-
-def load_llamaindex_nodes() -> List[Tuple[Dict, str]]:
-    """
-    Returns a linear list of (metadata, text) in document order across files.
-    Each item comes from MarkdownNodeParser.get_nodes_from_documents().
+    Reads each file exactly once. A previous version routed file discovery
+    through LlamaIndex's MarkdownNodeParser and then re-read/re-parsed every
+    file with a local regex, pairing one parser's nodes with the other parser's
+    heading blocks by position — any disagreement silently attached the wrong
+    body to a heading. The heading-block extractor below is now the single
+    source of truth.
     """
     if MD_TO_CHUNK.exists():
         logger.info(f"Loading markdown from single file {MD_TO_CHUNK}")
-        docs: List[Document] = SimpleDirectoryReader(
-            input_files=[str(MD_TO_CHUNK)],
-        ).load_data()
+        paths = [MD_TO_CHUNK]
     else:
         logger.info(f"Loading markdown from directory {CWD}")
-        docs: List[Document] = SimpleDirectoryReader(
-            str(CWD),
-            recursive=True,
-            required_exts=[".md"],
-        ).load_data()
-    logger.info(f"SimpleDirectoryReader loaded {len(docs)} files")
+        paths = sorted(CWD.rglob("*.md"))
 
-    # 2) Parse into nodes (Markdown-aware)
-    md_parser = MarkdownNodeParser()
-    nodes = md_parser.get_nodes_from_documents(docs)
-    logger.info(f"MarkdownNodeParser produced {len(nodes)} nodes")
+    file_texts: List[Tuple[str, str]] = []
+    for path in paths:
+        try:
+            rel = str(path.resolve().relative_to(CWD.resolve())).replace("\\", "/")
+        except Exception:
+            rel = path.name
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                file_texts.append((rel, f.read()))
+        except Exception as e:
+            logger.warning(f"Skipping unreadable file {path}: {e}")
 
-    # 3) Flatten to (metadata, text)
-    linear: List[Tuple[Dict, str]] = []
-    for n in nodes:
-        meta = dict(n.metadata or {})
-        text = n.get_content(metadata_mode="none")
+    logger.info(f"Loaded {len(file_texts)} markdown files")
+    return file_texts
 
-        if "file_path" not in meta and "filename" not in meta:
-            src = n.source_node
-            if src and hasattr(src, "metadata"):
-                srcm = dict(src.metadata)
-                fp = _extract_filename(srcm)
-                if fp:
-                    meta["file_path"] = fp
-
-        linear.append((meta, text))
-
-    return linear
 
 # ----------------- Build heading stack & propose leaves -----------------
-def build_candidates_from_linear(linear_nodes: List[Tuple[Dict, str]]) -> Tuple[List[LeafChunk], Dict[str, Dict]]:
+def build_candidates_from_files(file_texts: List[Tuple[str, str]]) -> Tuple[List[LeafChunk], Dict[str, Dict]]:
     """
-    Reconstruct a heading stack while walking nodes in order.
-    Emit *leaf candidates* (no children) as LeafChunk.
-    Also returns a front_matter map per filename (parsed from doc-level text).
+    Walk each file's heading blocks in order, maintaining a heading stack to
+    compute concat_header_path and parent_id. Emit one LeafChunk per heading.
+    Also returns the per-file front-matter map.
     """
     candidates: List[LeafChunk] = []
-    # Track stacks per file to compute concat_header_path and parent_id
-    stacks: Dict[str, List[Tuple[str, int, str]]] = {}  # filename -> [(heading, level, node_id)]
-    # per-file front matter
     front_matter_by_file: Dict[str, Dict] = {}
-    # cache ordered heading blocks extracted from the source markdown
-    heading_blocks: Dict[str, Deque[Tuple[str, int, str]]] = {}
 
-    for meta, text in linear_nodes:
-        # filename still comes from metadata (path resolution unchanged)
-        filename = _extract_filename(meta)
-        if not filename:
-            filename = "unknown.md"
+    for filename, raw in file_texts:
+        fm, body_text = parse_front_matter_text(raw)
+        front_matter_by_file[filename] = fm
 
-        # Get / cache front-matter per file (parse once)
-        if filename not in front_matter_by_file:
-            try:
-                file_path = Path(filename)
-                if not file_path.is_absolute():
-                    file_path = (CWD / file_path).resolve()
-                with open(file_path, "r", encoding="utf-8") as f:
-                    raw = f.read()
-            except Exception:
-                raw = text  # fallback to node text (may not include FM)
-            fm, body_text = parse_front_matter_text(raw)
-            front_matter_by_file[filename] = fm
-            heading_blocks[filename] = _extract_heading_blocks(body_text)
-
-        # maintain stack for this file
-        if filename not in stacks:
-            stacks[filename] = []
-
-        stack = stacks[filename]
-
-        blocks = heading_blocks.get(filename)
+        blocks = _extract_heading_blocks(body_text)
         if not blocks:
-            continue
-
-        # Pop the next heading/content block extracted from source markdown
-        heading, level, body = blocks.popleft()
-        body = (body or "").strip()
-        if heading == "":
-            continue
-
-        # pop to parent lower than this level
-        while stack and stack[-1][1] >= level:
-            stack.pop()
-        node_id = build_chunk_id(level, chunk_type="heading", content=body)
-        stack.append((heading, level, node_id))
-
-        concat = " > ".join([s[0] for s in stack])
-        parent_id = stack[-2][2] if len(stack) >= 2 else None
-        if not body:
-            # Heading with no text, only subheadings: when a heading is immediately followed by
-            # subheadings, _extract_heading_blocks yields an empty body for the parent. This function
-            # still emits a chunk, logs “Empty heading chunk encountered,” and sets its token count to
-            # zero. Downstream, chunks_to_dicts sees the zero tokens and forces
-            # embedding/summary flags to "false", so later stages skip embedding while keeping the
-            # header path so the UI can show the empty node in context. The child
-            # subheadings, each with their own content, are chunked normally when their blocks are
-            # processed.
-            logger.error(
-                "Empty heading chunk encountered: %s",
-                heading,
+            logger.warning(
+                "No headings found in %s; file produced no chunks.",
+                filename,
                 extra={"Parent Page": filename, "Token Count": 0},
             )
+            continue
 
-        candidates.append(
-            LeafChunk(
-                # identity / linkage
-                id=node_id,
-                filename=filename,
-                parent_id=parent_id,
-                # heading / structure
-                heading=heading,
-                header_level=level,
-                concat_header_path=concat,
-                # content
-                content=body,
-                examples=[],
-                # metrics / vectors
-                token_count=_tok(body) if body else 0,
+        stack: List[Tuple[str, int, str]] = []  # [(heading, level, node_id)]
+        for heading, level, body in blocks:
+            body = (body or "").strip()
+            if heading == "":
+                continue
+
+            # pop to parent lower than this level
+            while stack and stack[-1][1] >= level:
+                stack.pop()
+            node_id = build_chunk_id(level, chunk_type="heading", content=body)
+            stack.append((heading, level, node_id))
+
+            concat = " > ".join([s[0] for s in stack])
+            parent_id = stack[-2][2] if len(stack) >= 2 else None
+            if not body:
+                # Heading with no text, only subheadings. The chunk is still
+                # emitted (embed flag False, zero tokens) so the hierarchy and
+                # concat_header_path stay intact for the UI; the child headings
+                # carry the content.
+                logger.warning(
+                    "Empty heading chunk encountered: %s",
+                    heading,
+                    extra={"Parent Page": filename, "Token Count": 0},
+                )
+
+            candidates.append(
+                LeafChunk(
+                    # identity / linkage
+                    id=node_id,
+                    filename=filename,
+                    parent_id=parent_id,
+                    # heading / structure
+                    heading=heading,
+                    header_level=level,
+                    concat_header_path=concat,
+                    # content
+                    content=body,
+                    examples=[],
+                    # metrics / vectors
+                    token_count=_tok(body) if body else 0,
+                )
             )
-        )
-    # Return the constructed candidates list and the per-file front-matter map
+
     return candidates, front_matter_by_file
 
 # ----------------- Long-code extraction -----------------
@@ -496,7 +427,9 @@ def _make_component_chunk(source: LeafChunk, *, content: str, chunk_type: str, l
     return LeafChunk(
         id=chunk_id,
         filename=source.filename,
-        parent_id=source.parent_id,
+        # The component was peeled OUT of `source`, so it is a child of the
+        # heading chunk itself (not a sibling parented to source's parent).
+        parent_id=source.id,
         heading=source.heading,
         header_level=source.header_level,
         concat_header_path=source.concat_header_path,
@@ -840,10 +773,19 @@ def enforce_chunk_size(chunks: List[LeafChunk]) -> List[LeafChunk]:
 
 # ----------------- prev/next -----------------
 def link_prev_next(chunks: List[LeafChunk]) -> None:
-    """Populate ``id_prev``/``id_next`` to support retrieval and downstream UI pagination."""
-    for i, ch in enumerate(chunks):
-        ch.id_prev = chunks[i-1].id if i > 0 else None
-        ch.id_next = chunks[i+1].id if i < len(chunks)-1 else None
+    """Populate ``id_prev``/``id_next`` to support retrieval and downstream UI pagination.
+
+    Links are scoped per source file so "expand context" walks never cross
+    document boundaries (the list spans every file in the corpus).
+    """
+    by_file: Dict[str, List[LeafChunk]] = {}
+    for ch in chunks:
+        by_file.setdefault(ch.filename, []).append(ch)
+
+    for file_chunks in by_file.values():
+        for i, ch in enumerate(file_chunks):
+            ch.id_prev = file_chunks[i-1].id if i > 0 else None
+            ch.id_next = file_chunks[i+1].id if i < len(file_chunks)-1 else None
 
 # ----------------- Save (your schema) -----------------
 def save_chunks_with_ordered_fields(chunks: List[dict], path: str, metadata: Dict):
@@ -901,6 +843,7 @@ def save_chunks_with_ordered_fields(chunks: List[dict], path: str, metadata: Dic
 
         # --- 5) metrics / vectors ---
         ordered["token_count"] = chunk.get("token_count")
+        ordered["embed"] = chunk.get("embed", True)
         ordered["embedding"] = chunk.get("embedding")
 
         # --- 6) provenance reference ---
@@ -960,18 +903,13 @@ def chunks_to_dicts(chunks: List[LeafChunk]) -> List[dict]:
     Convert LeafChunk dataclass instances to plain dicts (no embeddings computed here),
     keeping keys in the same logical groups/order used by save_chunks_with_ordered_fields.
 
-    When the token count is 0, set embedding to "false" so that the summary and 
-    embedding script skips it.
+    Zero-token chunks (empty headings kept for structure) get embed=False so
+    downstream stages skip them. The embedding field itself stays list|None —
+    a previous version stored the string "false" there, forcing stringly-typed
+    checks through the embedding and upsert scripts.
     """
     out: List[dict] = []
     for ch in chunks:
-        embedding_value = ch.embedding
-        chunk_summary_value = ch.chunk_summary
-        page_summary_value = ch.page_summary
-        if ch.token_count == 0:
-            embedding_value = "false"
-            chunk_summary_value = "false"
-            page_summary_value = "false"
         out.append({
             # 1) identity / linkage
             "id": ch.id,
@@ -991,28 +929,29 @@ def chunks_to_dicts(chunks: List[LeafChunk]) -> List[dict]:
             "examples": ch.examples,
 
             # 4) summaries / metadata
-            "chunk_summary": chunk_summary_value,
-            "page_summary": page_summary_value,
+            "chunk_summary": ch.chunk_summary,
+            "page_summary": ch.page_summary,
             "language": ch.language,
 
             # 5) metrics / vectors
             "token_count": ch.token_count,
-            "embedding": embedding_value,
+            "embed": ch.token_count > 0,
+            "embedding": ch.embedding,
         })
     return out
 
 # ----------------- Driver -----------------
-def process_directory_llamaindex():
+def process_directory():
     """
-    1) LlamaIndex reads & parses markdown
-    2) We reconstruct heading stacks → leaf candidates
+    1) Read markdown files (single file or recursive directory)
+    2) Reconstruct heading stacks → leaf candidates
     3) Enforce size limits by peeling code examples/tables into separate chunks
-    4) Link prev/next pointers
+    4) Link prev/next pointers (per file)
     5) Emit ALL chunks to CWD/a_chunks.json
     """
-    linear = load_llamaindex_nodes()
+    file_texts = load_markdown_files()
 
-    candidates, fm_by_file = build_candidates_from_linear(linear)
+    candidates, fm_by_file = build_candidates_from_files(file_texts)
     logger.info(f"Candidates built: {len(candidates)}")
 
     final_chunks = enforce_chunk_size(candidates)
@@ -1038,5 +977,5 @@ def process_directory_llamaindex():
 
 # If run directly:
 if __name__ == "__main__":
-    process_directory_llamaindex()
+    process_directory()
     run_token_counter([str(CHUNK_OUTPUT)])

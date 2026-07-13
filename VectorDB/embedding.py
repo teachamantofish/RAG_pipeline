@@ -1,5 +1,15 @@
 '''
-Create the embeddings in a parquet file. 
+Create embeddings for the chunk file and persist them.
+
+Vectors are persisted to a Parquet sidecar (USE_PARQUET=True) or written back
+into the chunks JSON (USE_PARQUET=False / STRIP_EMBEDDINGS_IN_JSON=False), so
+downstream ingestion always has them on disk.
+
+Performance notes:
+- Texts are encoded in GPU batches (EMBED_BATCH_SIZE) instead of one call per
+  chunk.
+- Summary texts are deduplicated before encoding: the page summary is identical
+  for every chunk in an H1 group, so it is embedded once and reused.
 '''
 
 import os
@@ -7,7 +17,6 @@ import copy
 import json
 import sys
 import torch
-import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
@@ -23,6 +32,11 @@ ADAPTER_DIR = (DATASET_ROOT / Path(ADAPTER_PATH)).resolve() if ADAPTER_PATH else
 script_base = os.path.splitext(os.path.basename(__file__))[0]
 LOG_HEADER = ["Date", "Level", "Message", "Chunk ID"]
 logger = setup_global_logger(script_name=script_base, log_level=EMBED_LOG_LEVEL, headers=LOG_HEADER)
+
+SUMMARY_EMBED_FIELDS = (
+    ("chunk_summary", "embedding_summary_chunk"),
+    ("page_summary", "embedding_summary_page"),
+)
 
 
 def _attach_lora_adapter(sentence_model: SentenceTransformer, adapter_dir: Path) -> None:
@@ -64,6 +78,7 @@ def _attach_lora_adapter(sentence_model: SentenceTransformer, adapter_dir: Path)
         logger.error("Failed to load adapter from %s: %s", adapter_dir, exc)
         raise
 
+
 def _fmt_size(n_bytes: int) -> str:
     """Human-readable file size formatter."""
     units = ["B", "KB", "MB", "GB", "TB"]
@@ -73,23 +88,21 @@ def _fmt_size(n_bytes: int) -> str:
             return f"{size:.1f} {u}"
         size /= 1024.0
 
+
 def update_provenance_with_embedding():
     """Load a_provenance.json, add embedding details, and save back."""
     prov_path = DATASET_ROOT / "a_provenance.json"
-    
-    # Load existing provenance
+
     try:
         with open(prov_path, "r", encoding="utf-8") as f:
             provenance = json.load(f)
     except FileNotFoundError:
-        if 'PROVENANCE_REQUIRED' in globals() and PROVENANCE_REQUIRED:
+        if globals().get('PROVENANCE_REQUIRED'):
             logger.error(f"Provenance file not found at {prov_path}. Aborting.")
             sys.exit(1)
-        else:
-            logger.warning(f"Provenance file not found at {prov_path}. Creating a new one.")
-            provenance = {}
-    
-    # Update embed details (fill in existing keys)
+        logger.warning(f"Provenance file not found at {prov_path}. Creating a new one.")
+        provenance = {}
+
     provenance["embed"] = {
         "basemodel": EMBED_MODEL,
         "adaptermodel": ADAPTER_PATH,
@@ -98,18 +111,14 @@ def update_provenance_with_embedding():
         "output_precision": EMBED_OUTPUT_PRECISION,
         "vector_dim": EMBED_VECTOR_DIM,
     }
-    
-    # Save back
+
     with open(prov_path, "w", encoding="utf-8") as f:
         json.dump(provenance, f, indent=2, ensure_ascii=False)
-    
+
     logger.info(f"Updated provenance file at {prov_path}")
 
-with open(embedfile, 'r', encoding='utf-8') as f:
-    chunks = json.load(f)
-logger.info("Loaded chunks from %s; count=%d", embedfile, len(chunks) if hasattr(chunks, '__len__') else 0)
 
-# Optional: select a subset of chunks for a quick test run
+# ---------------- sampling controls (test runs) ----------------
 def _get_max_chunks_from_env(default_val):
     val = os.getenv("EMBED_MAX_CHUNKS")
     if not val:
@@ -121,6 +130,7 @@ def _get_max_chunks_from_env(default_val):
         logger.warning(f"Ignoring invalid EMBED_MAX_CHUNKS env value: {val}")
         return default_val
 
+
 def _get_sample_mode_from_env(default_val):
     val = os.getenv("EMBED_SAMPLE_MODE")
     if not val:
@@ -131,60 +141,36 @@ def _get_sample_mode_from_env(default_val):
     logger.warning(f"Ignoring invalid EMBED_SAMPLE_MODE env value: {val}")
     return default_val
 
-MAX_N = _get_max_chunks_from_env(globals().get('MAX_EMBED_CHUNKS', None))
-SAMPLE_MODE = _get_sample_mode_from_env(globals().get('CHUNK_SAMPLE_MODE', 'head'))
-SAMPLE_SEED = globals().get('CHUNK_SAMPLE_SEED', 42)
 
-selected_indices = None
-if isinstance(chunks, list) and MAX_N is not None:
+def _select_indices(chunks):
+    """Return the set of chunk indices to embed, or None for all."""
+    max_n = _get_max_chunks_from_env(globals().get('MAX_EMBED_CHUNKS', None))
+    if isinstance(max_n, str):
+        # Defensive: a config edited through the UI may hold "None"/"" strings.
+        max_n = int(max_n) if max_n.strip().isdigit() else None
+    sample_mode = _get_sample_mode_from_env(globals().get('CHUNK_SAMPLE_MODE', 'head'))
+    sample_seed = globals().get('CHUNK_SAMPLE_SEED', 42)
+
+    if not isinstance(chunks, list) or max_n is None:
+        logger.info("Embedding all available chunks (no sampling limit configured)")
+        return None
+
     total = len(chunks)
-    n = min(MAX_N, total)
-    if n < total:
-        if SAMPLE_MODE == 'random':
-            import random
-            rng = random.Random(SAMPLE_SEED)
-            selected_indices = set(sorted(rng.sample(range(total), n)))
-            logger.info(f"Sampling {n} chunks uniformly at random (seed={SAMPLE_SEED}) out of {total}")
-        else:
-            selected_indices = set(range(n))
-            logger.info(f"Taking first {n} chunks (head mode) out of {total}")
-    else:
+    n = min(max_n, total)
+    if n >= total:
         logger.info("Sampling configured but N >= total; embedding all chunks")
-else:
-    logger.info("Embedding all available chunks (no sampling limit configured)")
+        return None
+    if sample_mode == 'random':
+        import random
+        rng = random.Random(sample_seed)
+        selected = set(rng.sample(range(total), n))
+        logger.info(f"Sampling {n} chunks uniformly at random (seed={sample_seed}) out of {total}")
+        return selected
+    logger.info(f"Taking first {n} chunks (head mode) out of {total}")
+    return set(range(n))
 
-"""Enforce CUDA usage only.
-If CUDA is unavailable, exit with a non-zero code and a clear error message.
-"""
-if not torch.cuda.is_available():
-    msg = (
-        "CUDA is required for embeddings but was not found. "
-        "Please install a CUDA-enabled PyTorch build and ensure an NVIDIA GPU is available."
-    )
-    logger.error(msg)
-    sys.exit(1)
 
-# Prefer a specific CUDA device if configured; otherwise use the first visible GPU
-try:
-    device_index = None
-    if 'DEVICE_ID' in globals() and DEVICE_ID is not None:
-        # Validate index
-        count = torch.cuda.device_count()
-        if DEVICE_ID < 0 or DEVICE_ID >= count:
-            logger.error(f"Configured DEVICE_ID={DEVICE_ID} is out of range. Visible GPUs: {count}")
-            sys.exit(1)
-        device_index = DEVICE_ID
-    else:
-        device_index = 0
-
-    device = f"cuda:{device_index}" if device_index is not None else "cuda"
-    gpu_name = torch.cuda.get_device_name(device_index)
-    logger.info(f"Using GPU {device_index}: {gpu_name}")
-except Exception as e:
-    logger.error(f"Failed to select/query CUDA device: {e}")
-    sys.exit(1)
-
-# Precision controls: map config strings to torch dtypes and configure math paths
+# ---------------- device & precision ----------------
 def _dtype_from_string(name: str):
     name = (name or "").strip().lower()
     if name in ("fp32", "float32"): return torch.float32
@@ -193,241 +179,210 @@ def _dtype_from_string(name: str):
     if name == "tf32": return torch.float32  # tensors remain float32; TF32 enabled via flags below
     raise ValueError(f"Unsupported precision string: {name}")
 
-try:
-    compute_dtype = _dtype_from_string(EMBED_COMPUTE_PRECISION)
-except Exception as e:
-    logger.error(f"Invalid EMBED_COMPUTE_PRECISION '{EMBED_COMPUTE_PRECISION}': {e}")
-    sys.exit(1)
 
-try:
-    output_dtype = _dtype_from_string(EMBED_OUTPUT_PRECISION)
-except Exception as e:
-    logger.error(f"Invalid EMBED_OUTPUT_PRECISION '{EMBED_OUTPUT_PRECISION}': {e}")
-    sys.exit(1)
-
-# Configure TF32 acceleration for float32 compute if requested and supported
-try:
-    if ENABLE_TF32 and EMBED_COMPUTE_PRECISION.strip().lower() in ("tf32", "float32", "fp32"):
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        # For PyTorch >= 2.0, helps enable faster matmul in float32 paths
-        if hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")  # or "medium" if you want less aggressive
-        logger.info("TF32 acceleration enabled for float32 compute paths")
-except Exception as _e:
-    # Non-fatal: log at debug level if needed
-    pass
-
-# Resolve model: try DATASET_ROOT-relative local path first, then treat as HF model ID
-_local_model_path = DATASET_ROOT / EMBED_MODEL
-if _local_model_path.exists():
-    _resolved_model = str(_local_model_path)
-    logger.info("Using local model at %s", _resolved_model)
-else:
-    _resolved_model = EMBED_MODEL  # Treat as HuggingFace model ID
-    logger.info("Loading model from HuggingFace: %s", _resolved_model)
-embed_model = SentenceTransformer(_resolved_model, device=device)
-
-if ADAPTER_DIR:
-    if ADAPTER_DIR.exists():
-        _attach_lora_adapter(embed_model, ADAPTER_DIR)
-    else:
-        logger.warning(
-            "Configured adapter path '%s' not found at %s; falling back to base model weights.",
-            ADAPTER_PATH,
-            ADAPTER_DIR,
+def _setup_device() -> str:
+    """Enforce CUDA usage and return the device string (exits on failure)."""
+    if not torch.cuda.is_available():
+        logger.error(
+            "CUDA is required for embeddings but was not found. "
+            "Please install a CUDA-enabled PyTorch build and ensure an NVIDIA GPU is available."
         )
+        sys.exit(1)
 
-# Move model parameters to the desired compute dtype for faster inference when applicable
-try:
-    embed_model = embed_model.to(dtype=compute_dtype, device=device)
-    logger.info(f"Embedding compute precision set to {EMBED_COMPUTE_PRECISION}")
-except Exception as e:
-    logger.warning(f"Could not set model dtype to {EMBED_COMPUTE_PRECISION}: {e}")
-
-# Defensive check: ensure the model is targeting CUDA (no silent CPU fallback)
-target_device = getattr(embed_model, "device", None)
-td_str = str(target_device) if target_device is not None else "unknown"
-if not td_str.startswith("cuda"):
-    logger.error(f"Model target device is not CUDA (got: {td_str}). Aborting.")
-    sys.exit(1)
-
-try:
-    emb_dim = embed_model.get_sentence_embedding_dimension()
-    logger.info(f"This model's embedding dimension: {emb_dim}")
-except Exception:
-    pass
-
-# Compare with configured dimension, warn or enforce as configured
-try:
-    cfg_dim = EMBED_VECTOR_DIM
-    if isinstance(cfg_dim, int) and cfg_dim > 0 and emb_dim is not None:
-        if cfg_dim != emb_dim:
-            msg = (
-                f"Configured EMBED_VECTOR_DIM={cfg_dim} does not match model-reported dimension {emb_dim}. "
-                "No automatic dimensionality change is applied in this script. Ensure downstream consumers "
-                "(e.g., pgvector column and indexes) match the actual dimension, or add an explicit projection/"
-                "reduction step to produce the configured dimension before persistence."
-            )
-            if 'ENFORCE_EMBED_VECTOR_DIM' in globals() and ENFORCE_EMBED_VECTOR_DIM:
-                logger.error(msg)
+    try:
+        device_id = globals().get('DEVICE_ID')
+        if device_id is not None and not isinstance(device_id, int):
+            device_id = None
+        if device_id is not None:
+            count = torch.cuda.device_count()
+            if device_id < 0 or device_id >= count:
+                logger.error(f"Configured DEVICE_ID={device_id} is out of range. Visible GPUs: {count}")
                 sys.exit(1)
-            else:
-                logger.warning(msg)
-except Exception as _e:
-    # Non-fatal: if config missing or unexpected type
-    pass
+            device_index = device_id
+        else:
+            device_index = 0
+        device = f"cuda:{device_index}"
+        logger.info(f"Using GPU {device_index}: {torch.cuda.get_device_name(device_index)}")
+        return device
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to select/query CUDA device: {e}")
+        sys.exit(1)
 
-logger.info(f"Loaded {EMBED_MODEL} embedding model on {device}")
 
-# Apply embeddings to each chunk, respecting precision settings
-embedded_count = 0
-skipped_unselected = 0
-processed_candidates = 0
-for idx, chunk in enumerate(chunks):
-    if ENABLE_EMBEDDING:
-        # If a sampling subset is active and this index isn't selected, skip it
-        if selected_indices is not None and idx not in selected_indices:
-            skipped_unselected += 1
-            continue
-        processed_candidates += 1
-        if str(chunk.get('embedding')).lower() == 'false':
-            logger.info(f"Embedding skipped for {chunk['id']} (tokens: {chunk['token_count']}) because embedding is 'false'.")
-            # Normalize representation to None when JSON contains 'false' for downstream consumers
-            chunk['embedding'] = None
-            continue
-        logger.info(f"Embedding {chunk['id']}. Tokens: {chunk['token_count']}")
-        try:
-            # Use tensor output to preserve/control dtype, then cast to requested output dtype
-            # Note: compute dtype is controlled by model param dtype; autocast is generally not needed here
-            # Build enriched text: align with training by including heading + friendly names
-            _heading = (chunk.get("concat_header_path") or "").strip()
-            _friendly = (chunk.get("code_friendly_name") or "").strip()
-            _embed_text = f"{_heading}: {chunk['content']}" if _heading else chunk['content']
-            if _friendly:
-                _embed_text = f"{_embed_text}\n{_friendly}"
+def _load_model(device: str, compute_dtype) -> SentenceTransformer:
+    # Configure TF32 acceleration for float32 compute if requested and supported
+    try:
+        if ENABLE_TF32 and EMBED_COMPUTE_PRECISION.strip().lower() in ("tf32", "float32", "fp32"):
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            if hasattr(torch, "set_float32_matmul_precision"):
+                torch.set_float32_matmul_precision("high")
+            logger.info("TF32 acceleration enabled for float32 compute paths")
+    except Exception:
+        pass
 
-            emb_tensor = embed_model.encode(
-                _embed_text,
-                convert_to_tensor=True,
-                device=device,
-                normalize_embeddings=NORMALIZE_EMBEDDINGS,
-            )
-            # Ensure on GPU then cast to desired output dtype
-            if emb_tensor.device.type != 'cuda':
-                emb_tensor = emb_tensor.to('cuda')
-            # Extra safety: normalize if library version didn't apply it
-            if NORMALIZE_EMBEDDINGS:
-                try:
-                    emb_tensor = F.normalize(emb_tensor, p=2, dim=-1)
-                except Exception:
-                    pass
-            emb_tensor = emb_tensor.to(dtype=output_dtype)
-            # Move to CPU for JSON serialization
-            chunk['embedding'] = emb_tensor.detach().cpu().tolist()
-            if chunk['embedding'] is None:
-                logger.error(f"Embedding API returned None for {chunk['id']} (tokens: {chunk['token_count']})")
-            else:
-                logger.info(f"Embedding generated for {chunk['id']} (tokens: {chunk['token_count']})")
-                embedded_count += 1
-
-            # Also embed summaries for better high-level retrieval
-            # These are stored as separate fields for pgvector (summary-specific embeddings)
-            for summary_key, embed_key in (
-                ("chunk_summary", "embedding_summary_chunk"),
-                ("page_summary", "embedding_summary_page"),
-            ):
-                summary_text = chunk.get(summary_key) or ""
-                if not summary_text:
-                    chunk[embed_key] = None  # no summary -> no summary embedding
-                    logger.info(f"Summary embedding skipped for {chunk['id']} ({summary_key}: empty)")
-                    continue
-                summary_tensor = embed_model.encode(
-                    summary_text,
-                    convert_to_tensor=True,
-                    device=device,
-                    normalize_embeddings=NORMALIZE_EMBEDDINGS,
-                )
-                if summary_tensor.device.type != 'cuda':
-                    summary_tensor = summary_tensor.to('cuda')
-                if NORMALIZE_EMBEDDINGS:
-                    try:
-                        summary_tensor = F.normalize(summary_tensor, p=2, dim=-1)
-                    except Exception:
-                        pass
-                summary_tensor = summary_tensor.to(dtype=output_dtype)
-                chunk[embed_key] = summary_tensor.detach().cpu().tolist()
-                logger.info(f"Summary embedding generated for {chunk['id']} ({summary_key})")
-
-            # Positive proof log: confirm all three embeddings exist for this chunk
-            if (
-                chunk.get("embedding") is not None
-                and chunk.get("embedding_summary_chunk") is not None
-                and chunk.get("embedding_summary_page") is not None
-            ):
-                logger.info(
-                    f"Embeddings complete for {chunk['id']}: content + chunk_summary + page_summary"
-                )
-        except Exception as e:
-            # If any embedding step fails, keep fields explicit for downstream handling
-            chunk['embedding'] = None
-            chunk['embedding_summary_chunk'] = None
-            chunk['embedding_summary_page'] = None
-            logger.error(f"LLM embedding error for {chunk['id']}: {e}")
+    # Resolve model: try DATASET_ROOT-relative local path first, then treat as HF model ID
+    local_model_path = DATASET_ROOT / EMBED_MODEL
+    if local_model_path.exists():
+        resolved_model = str(local_model_path)
+        logger.info("Using local model at %s", resolved_model)
     else:
-        chunk['embedding'] = None
-        logger.info(f"Embedding skipped for {chunk['id']} (tokens: {chunk['token_count']}) because ENABLE_EMBEDDING is False.")
+        resolved_model = EMBED_MODEL  # Treat as HuggingFace model ID
+        logger.info("Loading model from HuggingFace: %s", resolved_model)
+    model = SentenceTransformer(resolved_model, device=device)
 
-# Save a copy of the input JSON with embeddings removed (post-embedding JSON should be metadata-only)
-stripped_chunks = copy.deepcopy(chunks)
-stripped = 0
-for ch in stripped_chunks:
-    if 'embedding' in ch and ch['embedding'] is not None:
-        ch['embedding'] = None
-        stripped += 1
-    if 'embedding_summary_chunk' in ch and ch['embedding_summary_chunk'] is not None:
-        ch['embedding_summary_chunk'] = None
-        stripped += 1
-    if 'embedding_summary_page' in ch and ch['embedding_summary_page'] is not None:
-        ch['embedding_summary_page'] = None
-        stripped += 1
-with open(post_embed_file, 'w', encoding='utf-8') as f:
-    json.dump(stripped_chunks, f, indent=JSON_INDENT, ensure_ascii=False)
-logger.info(f"Saved stripped post-embedding JSON (no vectors) to {post_embed_file} | stripped fields: {stripped}")
-try:
-    _json_stripped_size = post_embed_file.stat().st_size
-    logger.info(f"Current JSON size (stripped): {_fmt_size(_json_stripped_size)}")
-except Exception:
-    _json_stripped_size = None
+    if ADAPTER_DIR:
+        if ADAPTER_DIR.exists():
+            _attach_lora_adapter(model, ADAPTER_DIR)
+        else:
+            logger.warning(
+                "Configured adapter path '%s' not found at %s; falling back to base model weights.",
+                ADAPTER_PATH,
+                ADAPTER_DIR,
+            )
 
-# Log a brief summary of what we processed
-try:
-    total_chunks = len(chunks) if isinstance(chunks, list) else 0
-    logger.info(
-        "Embedding summary -> total: %s | candidates: %s | embedded: %s | skipped-unselected: %s",
-        total_chunks, processed_candidates, embedded_count, skipped_unselected,
+    try:
+        model = model.to(dtype=compute_dtype, device=device)
+        logger.info(f"Embedding compute precision set to {EMBED_COMPUTE_PRECISION}")
+    except Exception as e:
+        logger.warning(f"Could not set model dtype to {EMBED_COMPUTE_PRECISION}: {e}")
+
+    # Defensive check: ensure the model is targeting CUDA (no silent CPU fallback)
+    td_str = str(getattr(model, "device", "unknown"))
+    if not td_str.startswith("cuda"):
+        logger.error(f"Model target device is not CUDA (got: {td_str}). Aborting.")
+        sys.exit(1)
+    return model
+
+
+def _check_vector_dim(model) -> int:
+    emb_dim = None
+    try:
+        emb_dim = model.get_sentence_embedding_dimension()
+        logger.info(f"This model's embedding dimension: {emb_dim}")
+    except Exception:
+        pass
+
+    cfg_dim = globals().get('EMBED_VECTOR_DIM')
+    if isinstance(cfg_dim, int) and cfg_dim > 0 and emb_dim is not None and cfg_dim != emb_dim:
+        msg = (
+            f"Configured EMBED_VECTOR_DIM={cfg_dim} does not match model-reported dimension {emb_dim}. "
+            "No automatic dimensionality change is applied in this script. Ensure downstream consumers "
+            "(e.g., pgvector column and indexes) match the actual dimension, or add an explicit projection/"
+            "reduction step to produce the configured dimension before persistence."
+        )
+        if globals().get('ENFORCE_EMBED_VECTOR_DIM'):
+            logger.error(msg)
+            sys.exit(1)
+        logger.warning(msg)
+    return emb_dim
+
+
+# ---------------- encoding ----------------
+def _should_skip_chunk(chunk) -> bool:
+    """Chunks flagged non-embeddable by the chunker (empty headings)."""
+    if chunk.get('embed') is False:
+        return True
+    return str(chunk.get('embedding')).lower() == 'false'
+
+
+def _encode_batch(model, texts, device, output_dtype):
+    """Encode a list of texts; returns a list of Python float lists."""
+    batch_size = int(globals().get('EMBED_BATCH_SIZE', 64) or 64)
+    tensor = model.encode(
+        texts,
+        batch_size=batch_size,
+        convert_to_tensor=True,
+        device=device,
+        normalize_embeddings=NORMALIZE_EMBEDDINGS,
+        show_progress_bar=True,
     )
-except Exception:
-    pass
+    tensor = tensor.to(dtype=output_dtype)
+    return tensor.detach().cpu().tolist()
 
-# === Optional: Save embeddings to Parquet sidecar for compact, fast I/O ===
+
+def embed_chunks(chunks, model, device, output_dtype, selected_indices):
+    """Populate embedding fields on the chunk dicts. Returns counters dict."""
+    counters = {"embedded": 0, "skipped_unselected": 0, "skipped_flagged": 0}
+
+    if not ENABLE_EMBEDDING:
+        for chunk in chunks:
+            chunk['embedding'] = None
+        logger.info("ENABLE_EMBEDDING is False; skipping all embeddings.")
+        return counters
+
+    candidates = []
+    for idx, chunk in enumerate(chunks):
+        if selected_indices is not None and idx not in selected_indices:
+            counters["skipped_unselected"] += 1
+            continue
+        if _should_skip_chunk(chunk):
+            # Normalize representation to None for downstream consumers
+            chunk['embedding'] = None
+            counters["skipped_flagged"] += 1
+            logger.info(f"Embedding skipped for {chunk.get('id')} (flagged non-embeddable).")
+            continue
+        candidates.append(chunk)
+
+    if not candidates:
+        logger.warning("No chunks eligible for embedding.")
+        return counters
+
+    # --- content embeddings (batched) ---
+    # Build enriched text: align with training by including heading + friendly names
+    content_texts = []
+    for chunk in candidates:
+        heading = (chunk.get("concat_header_path") or "").strip()
+        friendly = (chunk.get("code_friendly_name") or "").strip()
+        text = f"{heading}: {chunk['content']}" if heading else chunk['content']
+        if friendly:
+            text = f"{text}\n{friendly}"
+        content_texts.append(text)
+
+    logger.info("Encoding %d content texts (batched)...", len(content_texts))
+    content_vectors = _encode_batch(model, content_texts, device, output_dtype)
+    for chunk, vector in zip(candidates, content_vectors):
+        chunk['embedding'] = vector
+    counters["embedded"] = len(candidates)
+
+    # --- summary embeddings (deduplicated + batched) ---
+    # Page summaries repeat across every chunk of an H1 group; embed each
+    # distinct text once and fan the vector out.
+    unique_texts = []
+    text_to_index = {}
+    for chunk in candidates:
+        for summary_key, _embed_key in SUMMARY_EMBED_FIELDS:
+            text = (chunk.get(summary_key) or "").strip()
+            if text and text.lower() != "false" and text not in text_to_index:
+                text_to_index[text] = len(unique_texts)
+                unique_texts.append(text)
+
+    summary_vectors = []
+    if unique_texts:
+        logger.info("Encoding %d unique summary texts (deduplicated, batched)...", len(unique_texts))
+        summary_vectors = _encode_batch(model, unique_texts, device, output_dtype)
+
+    for chunk in candidates:
+        for summary_key, embed_key in SUMMARY_EMBED_FIELDS:
+            text = (chunk.get(summary_key) or "").strip()
+            if text and text.lower() != "false":
+                chunk[embed_key] = summary_vectors[text_to_index[text]]
+            else:
+                chunk[embed_key] = None  # no summary -> no summary embedding
+
+    logger.info("Embedding complete: %d chunks embedded.", counters["embedded"])
+    return counters
+
+
+# ---------------- persistence ----------------
 def save_embeddings_to_parquet(chunks_list, parquet_path: Path, emb_dim: int, compression: str = "zstd", row_group_size: int | None = None):
     """
     Write embeddings to a Parquet sidecar file with schema: [id: string, embedding: fixed_size_list<float32, emb_dim>].
 
-    Rationale and benefits:
-    - JSON is verbose for large float arrays (each float rendered as text + commas/newlines), which inflates file size
-      and slows I/O. Parquet stores binary floats with optional compression (snappy/zstd), dramatically reducing size
-      and speeding read/write.
-    - This is a storage/serialization change only; it is lossless for retrieval quality because we preserve float32
-      values exactly (no quantization).
-    - Keeping embeddings outside the JSON keeps the metadata file small and easy to diff/inspect, while Parquet handles
-      the heavy numeric payload efficiently.
-
-    Implementation details:
-    - We use a fixed-size list column for 'embedding' to enforce consistent vector length (emb_dim) across rows.
-    - We cast to float32 per pgvector’s storage and common downstream expectations.
-    - If pyarrow is not installed, we emit a clear message with install guidance.
+    Parquet stores binary floats with compression, dramatically reducing size
+    and speeding I/O versus JSON, while remaining lossless (exact float32).
     """
     try:
         import pyarrow as pa
@@ -487,7 +442,7 @@ def save_embeddings_to_parquet(chunks_list, parquet_path: Path, emb_dim: int, co
 
     if not vectors:
         logger.warning("No embeddings available to write to Parquet; skipping.")
-        return
+        return 0
 
     # Flatten vectors to a single values array, then form a FixedSizeListArray
     flat = np.concatenate(vectors).astype(np.float32, copy=False)
@@ -496,11 +451,8 @@ def save_embeddings_to_parquet(chunks_list, parquet_path: Path, emb_dim: int, co
     # Prefer FixedSizeList if available, else fall back to list_ with list_size
     try:
         emb_array = pa.FixedSizeListArray.from_arrays(values, emb_dim)
-        emb_type = pa.list_(pa.float32(), list_size=emb_dim)
     except AttributeError:
-        # Older Arrow versions
-        emb_type = pa.list_(pa.float32(), list_size=emb_dim)
-        # Build offsets for a regular ListArray as fallback
+        # Older Arrow versions: build offsets for a regular ListArray
         offsets = pa.array([i * emb_dim for i in range(len(vectors) + 1)], type=pa.int32())
         emb_array = pa.ListArray.from_arrays(offsets, values)
 
@@ -509,18 +461,19 @@ def save_embeddings_to_parquet(chunks_list, parquet_path: Path, emb_dim: int, co
 
     # Optional summary embeddings (preserve row alignment; nulls allowed)
     def _to_list_array(vecs):
-        if not vecs:
+        if not vecs or all(v is None for v in vecs):
             return None
         vals = []
         offsets = [0]
+        mask = []
         for v in vecs:
             if v is None:
                 offsets.append(offsets[-1])
+                mask.append(True)
                 continue
             vals.append(v)
             offsets.append(offsets[-1] + emb_dim)
-        if not vals:
-            return None
+            mask.append(False)
         flat_local = np.concatenate(vals).astype(np.float32, copy=False)
         values_local = pa.array(flat_local, type=pa.float32())
         offsets_arr = pa.array(offsets, type=pa.int32())
@@ -542,47 +495,115 @@ def save_embeddings_to_parquet(chunks_list, parquet_path: Path, emb_dim: int, co
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, parquet_path.as_posix(), compression=compression, row_group_size=row_group_size)
     logger.info(f"Wrote {len(ids)} embeddings to Parquet: {parquet_path} (dim={emb_dim}, codec={compression})")
+    return len(ids)
 
-# If requested, emit a Parquet sidecar and strip embeddings from JSON to keep it lean
-try:
+
+def persist_outputs(chunks, model, embedded_count) -> None:
+    """Write embeddings + metadata to disk and verify vectors were persisted.
+
+    - USE_PARQUET=True: vectors go to the Parquet sidecar; the chunks JSON
+      stays lightweight (embedding=None) for the upsert step to merge.
+    - USE_PARQUET=False: vectors are written INTO a_chunks.json, which is what
+      upsert_to_vectordb.py reads when there is no sidecar. (A previous
+      version dropped the vectors entirely in this mode.)
+    """
+    strip_json = bool(globals().get('STRIP_EMBEDDINGS_IN_JSON', True)) and USE_PARQUET
+
+    # Always save a vector-free copy for human inspection/diffing.
+    stripped_chunks = copy.deepcopy(chunks)
+    for ch in stripped_chunks:
+        for key in ('embedding', 'embedding_summary_chunk', 'embedding_summary_page'):
+            if ch.get(key) is not None:
+                ch[key] = None
+    with open(post_embed_file, 'w', encoding='utf-8') as f:
+        json.dump(stripped_chunks, f, indent=JSON_INDENT, ensure_ascii=False)
+    logger.info(f"Saved stripped post-embedding JSON (no vectors) to {post_embed_file}")
+
+    persisted_vectors = 0
+
     if USE_PARQUET:
-        # Determine output paths and dimension
         parquet_file = DATASET_ROOT / PARQUET_FILENAME
-        # Infer dimension (we logged earlier too)
+        emb_dim = None
         try:
-            emb_dim = embed_model.get_sentence_embedding_dimension()
+            emb_dim = model.get_sentence_embedding_dimension()
         except Exception:
-            # Fallback: find first non-empty embedding
-            emb_dim = None
             for ch in chunks:
                 if isinstance(ch.get('embedding'), list):
                     emb_dim = len(ch['embedding'])
                     break
         if not emb_dim:
-            raise ValueError("Could not determine embedding dimension for Parquet output")
-
-        save_embeddings_to_parquet(chunks, parquet_file, emb_dim, PARQUET_COMPRESSION, PARQUET_ROW_GROUP_SIZE)
-
-        # Size summary for stripped JSON + Parquet
+            logger.error("Could not determine embedding dimension for Parquet output.")
+            sys.exit(1)
+        persisted_vectors = save_embeddings_to_parquet(
+            chunks, parquet_file, emb_dim, PARQUET_COMPRESSION, PARQUET_ROW_GROUP_SIZE
+        )
         try:
-            _parquet_size = parquet_file.stat().st_size if parquet_file.exists() else 0
-            if _json_stripped_size is not None:
-                logger.info(
-                    "Size summary -> Stripped JSON: %s | Parquet: %s | Stripped+Parquet total: %s",
-                    _fmt_size(_json_stripped_size),
-                    _fmt_size(_parquet_size),
-                    _fmt_size((_json_stripped_size or 0) + _parquet_size),
-                )
+            logger.info("Parquet size: %s", _fmt_size(parquet_file.stat().st_size))
         except Exception:
             pass
-except Exception as e:
-    logger.error(f"Parquet export step failed: {e}")
 
-# Finally, update provenance with the run's embedding settings
-try:
-    update_provenance_with_embedding()
-except SystemExit:
-    # Propagate intentional exit (e.g., missing provenance file as requested)
-    raise
-except Exception as e:
-    logger.error(f"Failed to update provenance: {e}")
+    if not strip_json:
+        # Persist vectors inline so the upsert step can read them from JSON.
+        with open(embedfile, 'w', encoding='utf-8') as f:
+            json.dump(chunks, f, indent=JSON_INDENT, ensure_ascii=False)
+        persisted_vectors = max(
+            persisted_vectors,
+            sum(1 for ch in chunks if isinstance(ch.get('embedding'), list)),
+        )
+        logger.info(f"Saved chunks WITH embeddings to {embedfile}")
+
+    if embedded_count and not persisted_vectors:
+        logger.error(
+            "Computed %s embeddings but persisted none (check USE_PARQUET/pyarrow). Aborting.",
+            embedded_count,
+        )
+        sys.exit(1)
+
+
+def main() -> None:
+    with open(embedfile, 'r', encoding='utf-8') as f:
+        chunks = json.load(f)
+    logger.info("Loaded chunks from %s; count=%d", embedfile, len(chunks) if hasattr(chunks, '__len__') else 0)
+
+    selected_indices = _select_indices(chunks)
+    device = _setup_device()
+
+    try:
+        compute_dtype = _dtype_from_string(EMBED_COMPUTE_PRECISION)
+    except Exception as e:
+        logger.error(f"Invalid EMBED_COMPUTE_PRECISION '{EMBED_COMPUTE_PRECISION}': {e}")
+        sys.exit(1)
+    try:
+        output_dtype = _dtype_from_string(EMBED_OUTPUT_PRECISION)
+    except Exception as e:
+        logger.error(f"Invalid EMBED_OUTPUT_PRECISION '{EMBED_OUTPUT_PRECISION}': {e}")
+        sys.exit(1)
+
+    model = _load_model(device, compute_dtype)
+    _check_vector_dim(model)
+    logger.info(f"Loaded {EMBED_MODEL} embedding model on {device}")
+
+    try:
+        counters = embed_chunks(chunks, model, device, output_dtype, selected_indices)
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        sys.exit(1)
+
+    logger.info(
+        "Embedding summary -> total: %s | embedded: %s | skipped-unselected: %s | skipped-flagged: %s",
+        len(chunks), counters["embedded"], counters["skipped_unselected"], counters["skipped_flagged"],
+    )
+
+    persist_outputs(chunks, model, counters["embedded"])
+
+    # Finally, update provenance with the run's embedding settings
+    try:
+        update_provenance_with_embedding()
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update provenance: {e}")
+
+
+if __name__ == "__main__":
+    main()

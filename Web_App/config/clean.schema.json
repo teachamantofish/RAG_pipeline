@@ -4,52 +4,46 @@
   "phase": "clean",
   "fields": [
     {
-      "key": "REMOVE_IMAGES",
-      "label": "Remove Images",
+      "key": "ENABLE_STRUCTURE_FIXES",
+      "label": "Structure Fixes",
       "type": "boolean",
-      "help": "Strip image references (![alt](url)) from the markdown files."
+      "help": "Remove content before the first H1, drop configured headings, prune sections below the minimum-size threshold, and fix empty or missing top-level headings."
     },
     {
-      "key": "NORMALIZE_FORMATTING",
-      "label": "Normalize Formatting",
+      "key": "ENABLE_HEADING_NORMALIZATION",
+      "label": "Heading Normalization",
       "type": "boolean",
-      "help": "Standardize markdown formatting (heading levels, list markers, emphasis syntax)."
+      "help": "Strip numbering from headings (e.g. '3.2 Example' -> 'Example') and ensure blank lines around markdown and bold headings."
     },
     {
-      "key": "REMOVE_EXTRA_WHITESPACE",
-      "label": "Remove Extra Whitespace",
+      "key": "ENABLE_LINK_FIXES",
+      "label": "Link Fixes",
       "type": "boolean",
-      "help": "Collapse runs of blank lines and trailing spaces."
+      "help": "Fix 'See also' blocks, normalize URL formatting, and remove duplicated standalone URL lines."
     },
     {
-      "key": "STRIP_HTML_COMMENTS",
-      "label": "Strip HTML Comments",
+      "key": "ENABLE_CODE_FENCE_FIXES",
+      "label": "Code Fence Fixes",
       "type": "boolean",
-      "help": "Remove <!-- … --> HTML comment blocks from the markdown."
+      "help": "Add language IDs to bare code fences, remove prose duplicated immediately before a fence, and strip line numbers inside fences."
     },
     {
-      "key": "NORMALIZE_LINE_ENDINGS",
-      "label": "Normalize Line Endings",
+      "key": "ENABLE_TABLE_REPAIR",
+      "label": "Table Repair",
       "type": "boolean",
-      "help": "Convert all line endings to Unix-style (LF)."
+      "help": "Remove wrapped table rows and repair broken markdown table rows."
     },
     {
-      "key": "INPUT_DIRECTORY",
-      "label": "Input Directory",
-      "type": "text",
-      "help": "Folder name (relative to the data root) containing the raw markdown files to clean."
-    },
-    {
-      "key": "OUTPUT_DIRECTORY",
-      "label": "Output Directory",
-      "type": "text",
-      "help": "Folder name where cleaned markdown files are written."
-    },
-    {
-      "key": "BACKUP_ORIGINAL",
-      "label": "Backup Original",
+      "key": "ENABLE_LIST_NORMALIZATION",
+      "label": "List Normalization",
       "type": "boolean",
-      "help": "Create a backup copy of each file before overwriting it with the cleaned version."
+      "help": "Normalize unordered/ordered list spacing and caution admonitions."
+    },
+    {
+      "key": "ENABLE_CUSTOM_REGEX",
+      "label": "Custom Regex Cleanup",
+      "type": "boolean",
+      "help": "Apply the CSV-driven regex replacements (common/regex_replacements.csv) as the final cleanup pass."
     }
   ]
 }

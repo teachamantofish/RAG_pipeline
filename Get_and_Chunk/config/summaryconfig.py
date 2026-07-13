@@ -1,6 +1,3 @@
-import os
-from sqlalchemy import null
-
 # on each run, do the following:
 # 1. Check if LLM access is configured; e.g.: is the Ollama server running?
 # 2. Verify small chunk handling settings
@@ -8,7 +5,12 @@ from sqlalchemy import null
 # 4. Test on 1-N chunks first
 
 CHUNK_SUMMARY_MODEL = "qwen3-next-80b-a3b-instruct-hmt"
-TESTINGMODE = "Null"                    # If null, run the full test; if a number, limit to N chunks for faster testing.
+TESTINGMODE = None                      # If None, run the full pipeline; if a number, limit to N chunks for faster testing.
+
+# Execution behavior
+SUMMARY_MAX_WORKERS = 4                 # Concurrent LLM requests for chunk summaries (1 = serial).
+RESUME_SUMMARIES = True                 # Skip chunks that already have a non-empty chunk_summary (safe re-runs).
+SUMMARY_FLUSH_EVERY = 50                # Persist progress to a_chunks.json after every N summarized chunks.
 
 # Chunk-level summary
 ENABLE_CHUNK_SUMMARY = True             # Set to False to skip summary generation during testing
@@ -27,7 +29,7 @@ ADD_PAGE_SUMMARY = False                # Whether to add the page summary to the
 ENABLE_FILE_SUMMARY = False             # Disable file and page-level (Heading 1) summaries to avoid adding content that competes with granular chunk content.
 FILE_SUMMARY_MODEL = "qwen3-next-80b-a3b-instruct-hmt"
 FILE_SUMMARY_SIZE = 125                 # Max tokens for page summary
-FILE_SUMMARY_PROMPT = (f"Summarize the main ideas in this page or heading in {FILE_SUMMARY_SIZE} tokens. Do not include heading text, bullets, quotes. Identify the functionality and purpose of child nodes. tive voice. Be concise and clear.")
+FILE_SUMMARY_PROMPT = (f"Summarize the main ideas in this page or heading in {FILE_SUMMARY_SIZE} tokens. Do not include heading text, bullets, quotes. Identify the functionality and purpose of child nodes. Active voice. Be concise and clear.")
 FILE_SUMMARY_TEMPERATURE = 1            # Lower values make the output more deterministic.
 
 # Summarize Summaries

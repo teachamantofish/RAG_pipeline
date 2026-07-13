@@ -1,12 +1,15 @@
-# Don't run this directly; use summary_wrapper_hf.py to use a large model on Hugging Face.  
+# Don't run this directly; use summary_wrapper_hf.py to use a large model on Hugging Face.
 import os
 import json
+import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+
 from config.summaryconfig import *
 from config.chunkerconfig import TOKENIZER
-# Shared metadata utilities (centralized CSV loading + merge rules)
 from common.run_context import get_run_context
+from common.summary_backends import build_summary_settings, run_summary_backend
 from Logger.custom_logger import setup_global_logger
 from common.token_counter import main as run_token_counter
 
@@ -14,21 +17,36 @@ ctx = get_run_context()
 CWD = ctx['cwd']
 chunkfile = CWD / "a_chunks.json"
 
+# Nested settings consumed by the summarize functions; built from the flat
+# summaryconfig constants + env overrides (see common/summary_backends.py).
+SUMMARY_SETTINGS = build_summary_settings()
+
 # Set up global logger with script-specific CSV header; overwrite existing log
 script_base = os.path.splitext(os.path.basename(__file__))[0]
 LOG_HEADER = ["Date", "Level", "Message", "Chunk Summary", "Page Summary"]
 logger = setup_global_logger(script_name=script_base, log_level='INFO', headers=LOG_HEADER)
 
+# Serializes writes of the chunk list during concurrent summarization.
+_FLUSH_LOCK = threading.Lock()
+
+
+def _save_chunks(chunks: list) -> None:
+    """Persist the FULL chunk list back to a_chunks.json."""
+    with _FLUSH_LOCK:
+        with open(chunkfile, "w", encoding="utf-8") as f:
+            json.dump(chunks, f, indent=2, ensure_ascii=False)
+
+
 # Exit if there is no connection to the LLM backend.
-def check_llm_connection(): 
+def check_llm_connection():
     """Send a test prompt to the LLM backend and exit if it fails."""
     try:
         test_prompt = "Test LLM connection."
         backend = SUMMARY_SETTINGS["chunk"]["backend"]
         params = SUMMARY_SETTINGS["chunk"]
         result = run_summary_backend(backend, test_prompt, params)
-        if not result or "error" in result.lower() or "fail" in result.lower():
-            print(f"[ERROR] LLM backend test failed: {result}")
+        if not result:
+            print("[ERROR] LLM backend test returned an empty response.")
             import sys
             sys.exit(1)
     except Exception as e:
@@ -36,20 +54,32 @@ def check_llm_connection():
         import sys
         sys.exit(1)
 
-# Get testing mode limit if set and stop processing after N chunks.
-def get_testing_mode():
-    try:
-        return TESTINGMODE
-    except Exception:
+
+def get_testing_mode() -> Optional[int]:
+    """Return the testing-mode chunk limit, or None for a full run.
+
+    Accepts int or numeric string; any other value (historically the string
+    "Null") is treated as None with a warning so a config typo can't silently
+    force testing mode.
+    """
+    value = globals().get("TESTINGMODE")
+    if value is None:
         return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "TESTINGMODE=%r is not an integer; running the full pipeline. "
+            "Use None or a number.", value
+        )
+        return None
+
 
 # Append summary details to the existing provenance file
 def update_provenance_with_summary():
     """Load a_provenance.json, add summary details, and save back."""
-    from datetime import datetime
-    
     prov_path = CWD / "a_provenance.json"
-    
+
     # Load existing provenance
     try:
         with open(prov_path, "r", encoding="utf-8") as f:
@@ -57,7 +87,7 @@ def update_provenance_with_summary():
     except FileNotFoundError:
         logger.warning(f"Provenance file not found at {prov_path}, creating new one")
         provenance = {}
-    
+
     # Update summary details (fill in existing keys)
     provenance["summary"] = {
         "model": f"{SUMMARY_SETTINGS['chunk']['backend']}:{SUMMARY_SETTINGS['chunk']['model']}",
@@ -65,12 +95,13 @@ def update_provenance_with_summary():
         "size": SUMMARY_SETTINGS["chunk"]["size"],
         "temperature": SUMMARY_SETTINGS["chunk"]["temperature"],
     }
-    
+
     # Save back
     with open(prov_path, "w", encoding="utf-8") as f:
         json.dump(provenance, f, indent=2, ensure_ascii=False)
-    
+
     logger.info(f"Updated provenance file at {prov_path}")
+
 
 # Chunks under this size receive a metadata preface before their content.
 def _tok_len(text: str) -> int:
@@ -82,14 +113,15 @@ def _tok_len(text: str) -> int:
     except Exception:
         return len(text.split())
 
+
 def _prepend_metadata_to_small_chunk(chunk: dict) -> None:
     """
     Insert concatenated heading/page/chunk summaries ahead of short chunk bodies.
-    
+
     Assumes caller has already checked token_count < PAD_CHUNK_THRESHOLD.
     """
     content = chunk.get("content") or ""
-    
+
     # Collect metadata lines based on config flags
     metadata_lines = []
     if ADD_CONCAT_HEADER_PATH and chunk.get("concat_header_path"):
@@ -102,7 +134,7 @@ def _prepend_metadata_to_small_chunk(chunk: dict) -> None:
     if not metadata_lines:
         return
 
-    prefix_block = "\r\n".join(metadata_lines)
+    prefix_block = "\n".join(metadata_lines)
 
     lines = content.splitlines()
 
@@ -112,19 +144,30 @@ def _prepend_metadata_to_small_chunk(chunk: dict) -> None:
     ):
         lines = lines[len(metadata_lines):]
 
-    body = "\r\n".join(lines)
+    body = "\n".join(lines)
 
     if body:
-        new_content = prefix_block + "\r\n" + body
+        new_content = prefix_block + "\n" + body
     else:
         new_content = prefix_block
 
     chunk["content"] = new_content
     # token_count will be recalculated by token_counter script at end of pipeline
 
+
+def _is_table_chunk(chunk: dict) -> bool:
+    return (chunk.get("chunk_type") or chunk.get("type")) == "table"
+
+
+def _is_code_chunk(chunk: dict) -> bool:
+    # The chunker emits chunk_type="example" for peeled code blocks;
+    # tolerate the legacy type="code_example" spelling.
+    return (chunk.get("chunk_type") or chunk.get("type")) in ("example", "code_example")
+
+
 def _prepend_table_summary(chunk: dict) -> None:
     """Ensure table chunks start with their summary followed by the table body."""
-    if (chunk.get("chunk_type") or chunk.get("type")) != "table":
+    if not _is_table_chunk(chunk):
         return
     summary = (chunk.get("chunk_summary") or "").strip()
     if not summary:
@@ -136,6 +179,7 @@ def _prepend_table_summary(chunk: dict) -> None:
         return
     separator = "\n\n" if body else ""
     chunk["content"] = f"{summary}{separator}{body}" if body else summary
+
 
 def _resolve_h1_root(chunk: dict, by_id: dict) -> Optional[dict]:
     """Follow parent links to find the nearest heading level 1 ancestor."""
@@ -177,19 +221,17 @@ def _group_chunks_by_top_heading(chunks: list[dict]) -> "OrderedDict[tuple, dict
 
     return grouped
 
+
 def summarize_summaries():
     """
     After chunking and summarizing the chunks, create a page summary rollup of the chunk summaries,
-    and store them in a "parent_summary" (a pseudo page summary).
+    and store them in each chunk's "page_summary" field.
 
-    For each chunk with identical : 
-
-    - Identify the highest page ancestor: 
-        - Get the parent ancestor h1 text, if any.
-        - It will always be the smallest header AND/OR the first header.
-    - Concat all chunk summaries for the h1 and its children
-    - Send that to the LLM for summarization
-    - Write to the chunk["parent_summary"] field
+    For each H1 group:
+    - Identify the highest page ancestor (H1, or filename fallback).
+    - Concat all chunk summaries for the H1 and its children.
+    - Send that to the LLM for summarization.
+    - Write the result to every group member's chunk["page_summary"].
     """
     # Load chunks as plain list
     with open(chunkfile, "r", encoding="utf-8") as f:
@@ -255,10 +297,14 @@ def summarize_summaries():
                 logger.error("File summary error for %s: %s", label, e)
                 page_summary = ""
 
-        # Write the returned page_summary to every chunk in the same doc
+        # Write the returned page_summary to every chunk in the same doc.
+        # Only small chunks get the metadata preface (same threshold as
+        # summarize_chunks); padding everything would blow past the chunker's
+        # size budget.
         for c in group:
             c["page_summary"] = page_summary
-            _prepend_metadata_to_small_chunk(c)
+            if c.get("token_count", 0) < PAD_CHUNK_THRESHOLD:
+                _prepend_metadata_to_small_chunk(c)
         logger.debug("Assigned page_summary to %d chunks for %s", len(group), label)
 
         # Emit a structured CSV log row using the global logger; ensure extras
@@ -269,9 +315,81 @@ def summarize_summaries():
             logger.exception("Failed to emit log for page summary %s", label)
 
     # Persist changes
-    with open(chunkfile, "w", encoding="utf-8") as f:
-        json.dump(chunks, f, indent=2, ensure_ascii=False)
+    _save_chunks(chunks)
     logger.info("Wrote page-level summaries back to %s", chunkfile)
+
+
+def _summarize_one_chunk(chunk: dict) -> None:
+    """Generate the chunk summary (and code summary) for a single chunk.
+
+    Mutates only ``chunk``; safe to run from a worker thread.
+    """
+    try:
+        # Build the system prompt with heading context
+        heading_context = chunk.get("concat_header_path", "unknown section")
+        system_prompt = SUMMARY_SETTINGS["chunk"]["system_prompt_template"].format(
+            heading_context=heading_context,
+            size=SUMMARY_SETTINGS["chunk"]["size"]
+        )
+
+        # Create a params dict with the formatted prompt
+        params = SUMMARY_SETTINGS["chunk"].copy()
+        params["system_prompt"] = system_prompt
+
+        chunk["chunk_summary"] = run_summary_backend(
+            SUMMARY_SETTINGS["chunk"]["backend"],
+            chunk["content"],
+            params
+        )
+        try:
+            summary_text = " ".join(chunk["chunk_summary"].splitlines()).strip()
+            logger.info(f"{chunk.get('id')} chunk summary", extra={"Chunk Summary": summary_text, "Page Summary": ""})
+        except Exception:
+            logger.exception("Failed emitting structured log for chunk %s", chunk.get('id'))
+    except Exception as e:
+        logger.error(f"Chunk summary error for chunk {chunk.get('id')}: {e}")
+        chunk["chunk_summary"] = ""
+
+    _prepend_table_summary(chunk)
+
+    # Prepend metadata to small chunks after summarization
+    if chunk.get("token_count", 0) < PAD_CHUNK_THRESHOLD:
+        _prepend_metadata_to_small_chunk(chunk)
+
+    # Code-level summary for peeled code-example chunks.
+    if _is_code_chunk(chunk) and ENABLE_CODE_SUMMARY:
+        try:
+            code_params = {
+                "model": CODE_SUMMARY_MODEL,
+                "system_prompt": CODE_SUMMARY_PROMPT,
+                "size": CODE_SUMMARY_SIZE,
+                "temperature": CODE_SUMMARY_TEMPERATURE,
+            }
+            chunk["code_summary"] = run_summary_backend(
+                SUMMARY_SETTINGS["chunk"]["backend"],
+                chunk["content"],
+                code_params,
+            )
+            try:
+                code_text = " ".join(chunk["code_summary"].splitlines()).strip()
+                logger.info(f"Code summarized {chunk.get('id')}", extra={"Chunk Summary": code_text, "Page Summary": ""})
+            except Exception:
+                logger.exception("Failed emitting structured log for code summary %s", chunk.get('id'))
+        except Exception as e:
+            logger.error(f"Code summary error for chunk {chunk.get('id')}: {e}")
+            chunk["code_summary"] = ""
+
+
+def _needs_summary(chunk: dict) -> bool:
+    """Decide whether a chunk needs a (re)generated summary."""
+    if chunk.get("token_count", 0) < SKIP_CHUNK_THRESHOLD:
+        return False
+    existing = chunk.get("chunk_summary")
+    if globals().get("RESUME_SUMMARIES", True) and isinstance(existing, str) and existing and existing != "false":
+        # Already summarized on a previous (possibly interrupted) run.
+        return False
+    return True
+
 
 def summarize_chunks(testing_limit=None):
     # Load chunks as plain list
@@ -279,79 +397,54 @@ def summarize_chunks(testing_limit=None):
         chunks = json.load(f)
     logger.info("Loaded chunks for chunk-level summarization; count=%d", len(chunks) if hasattr(chunks, '__len__') else 0)
 
+    # In testing mode only the first N chunks are PROCESSED, but the full list
+    # is always kept and saved (a previous version truncated and overwrote
+    # a_chunks.json here, permanently deleting the rest of the corpus).
+    process_pool = chunks
     if testing_limit is not None:
         try:
             limit = int(testing_limit)
-            chunks = chunks[:limit]
-        except Exception:
-            pass
-    
-    for chunk in chunks:
-        # Skip chunks below threshold
+            process_pool = chunks[:limit]
+            logger.info("Testing mode: summarizing only the first %d of %d chunks", len(process_pool), len(chunks))
+        except (TypeError, ValueError):
+            logger.warning("Invalid testing limit %r; summarizing all chunks", testing_limit)
+
+    todo = []
+    for chunk in process_pool:
         if chunk.get("token_count", 0) < SKIP_CHUNK_THRESHOLD:
-            chunk["chunk_summary"] = ""
+            # Below threshold: mark explicitly empty unless resuming an existing summary.
+            if not (globals().get("RESUME_SUMMARIES", True) and chunk.get("chunk_summary")):
+                chunk["chunk_summary"] = ""
             continue
-        
-        try:
-            # Build the system prompt with heading context
-            heading_context = chunk.get("concat_header_path", "unknown section")
-            system_prompt = SUMMARY_SETTINGS["chunk"]["system_prompt_template"].format(
-                heading_context=heading_context,
-                size=SUMMARY_SETTINGS["chunk"]["size"]
-            )
-            
-            # Create a params dict with the formatted prompt
-            params = SUMMARY_SETTINGS["chunk"].copy()
-            params["system_prompt"] = system_prompt
-            
-            chunk["chunk_summary"] = run_summary_backend(
-                SUMMARY_SETTINGS["chunk"]["backend"],
-                chunk["content"],
-                params
-            )
-            logger.debug("Chunk %s chunk_summary set (len=%d)", chunk.get('id'), len(chunk["chunk_summary"] or ""))
-            # Emit structured log row with chunk summary in the proper column
-            try:
-                summary_text = " ".join(chunk["chunk_summary"].splitlines()).strip()
-                logger.info(f"{chunk.get('id')} chunk summary", extra={"Chunk Summary": summary_text, "Page Summary": ""})
-            except Exception:
-                logger.exception("Failed emitting structured log for chunk %s", chunk.get('id'))
-        except Exception as e:
-            logger.error(f"Chunk summary error for chunk {chunk['id']}: {e}")
-            chunk["chunk_summary"] = ""
-        
-        _prepend_table_summary(chunk)
+        if _needs_summary(chunk):
+            todo.append(chunk)
+        else:
+            logger.debug("Resume: chunk %s already summarized; skipping", chunk.get("id"))
 
-        # Prepend metadata to small chunks after summarization
-        if chunk.get("token_count", 0) < PAD_CHUNK_THRESHOLD:
-            _prepend_metadata_to_small_chunk(chunk)
-        
-        # Code-level summary (code_summary). "code_example" is defined in chunking logic.
-        if chunk.get("type") == "code_example" and ENABLE_CODE_SUMMARY:
-            try:
-                response = openai.chat.completions.create(
-                    model=CODE_SUMMARY_MODEL,
-                    messages=[
-                        {"role": "system", "content": CODE_SUMMARY_PROMPT},
-                        {"role": "user", "content": chunk["content"]}
-                    ],
-                    max_tokens=CODE_SUMMARY_SIZE,
-                    temperature=CODE_SUMMARY_TEMPERATURE,
-                )
-                chunk["code_summary"] = response.choices[0].message.content.strip()
-                logger.debug("Chunk %s code_summary set (len=%d)", chunk.get('id'), len(chunk.get("code_summary") or ""))
-                try:
-                    code_text = " ".join(chunk["code_summary"].splitlines()).strip()
-                    logger.info(f"Code summarized {chunk.get('id')}", extra={"Chunk Summary": code_text, "Page Summary": ""})
-                except Exception:
-                    logger.exception("Failed emitting structured log for code summary %s", chunk.get('id'))
-            except Exception as e:
-                logger.error(f"Code summary error for chunk {chunk['id']}: {e}")
-                chunk["code_summary"] = ""
+    logger.info("Chunks needing summaries: %d", len(todo))
 
-    # Save chunks as plain list
-    with open(chunkfile, "w", encoding="utf-8") as f:
-        json.dump(chunks, f, indent=2, ensure_ascii=False)
+    max_workers = max(1, int(globals().get("SUMMARY_MAX_WORKERS", 1) or 1))
+    flush_every = max(1, int(globals().get("SUMMARY_FLUSH_EVERY", 50) or 50))
+
+    completed = 0
+    if max_workers == 1:
+        for chunk in todo:
+            _summarize_one_chunk(chunk)
+            completed += 1
+            if completed % flush_every == 0:
+                _save_chunks(chunks)
+                logger.info("Progress saved: %d/%d summaries", completed, len(todo))
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for start in range(0, len(todo), flush_every):
+                batch = todo[start:start + flush_every]
+                list(pool.map(_summarize_one_chunk, batch))
+                completed += len(batch)
+                _save_chunks(chunks)
+                logger.info("Progress saved: %d/%d summaries", completed, len(todo))
+
+    # Save chunks as plain list (full list, regardless of testing limit)
+    _save_chunks(chunks)
     logger.info("Summarized chunks saved to %s", chunkfile)
 
 

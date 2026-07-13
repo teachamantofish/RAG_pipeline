@@ -121,7 +121,6 @@ function wireButtons(container, prefix, getBinder, getOriginal, setOriginal, sch
   const statusEl = container.querySelector(`#${prefix}-status-display`);
   const rawViewer = container.querySelector(`#${prefix}-config-viewer`);
   const defaultsBtn = ensureDefaultsButton(container, prefix);
-  let currentRunController = null;
   let currentRunScript = null;
 
   const isDirty = () => {
@@ -226,25 +225,26 @@ function wireButtons(container, prefix, getBinder, getOriginal, setOriginal, sch
         return;
       }
 
-      let pollTimer = null;
       let lastTail = null;
-      let pollFailedAtLeastOnce = false;
-      const runController = new AbortController();
-      currentRunController = runController;
       currentRunScript = runScript;
 
-      const pollOnce = async () => {
+      const pollLog = async () => {
         try {
           const tail = await fetchLogTail(runScript, LOG_TAIL_LINES);
           lastTail = tail;
           renderRunningLog(statusEl, runScript, tail);
           renderRunningLogToViewer(rawViewer, runScript, tail);
         } catch (e) {
-          pollFailedAtLeastOnce = true;
           if (statusEl) {
             statusEl.value = `Running ${runScript}...\n\nLive log unavailable right now (${e?.message || 'poll failed'}).`;
           }
         }
+      };
+
+      const fetchStatus = async () => {
+        const resp = await fetch(`/api/run-status?script=${encodeURIComponent(runScript)}`, { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return resp.json();
       };
 
       try {
@@ -253,67 +253,64 @@ function wireButtons(container, prefix, getBinder, getOriginal, setOriginal, sch
         if (stopBtn) stopBtn.disabled = false;
         if (statusEl) statusEl.value = `Running ${runScript}…`;
 
-        await pollOnce();
-        pollTimer = window.setInterval(pollOnce, LOG_POLL_INTERVAL_MS);
-
-        const resp = await fetch('/api/run-script', {
+        // Start the run; the server responds immediately and the script keeps
+        // running server-side (survives dropped requests / long runs).
+        const startResp = await fetch('/api/run-script', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: runController.signal,
           body: JSON.stringify({ script: runScript }),
         });
-        const result = await resp.json();
+        const startResult = await startResp.json();
+        if (!startResp.ok || !startResult.success) {
+          throw new Error(startResult.error || `HTTP ${startResp.status}`);
+        }
 
-        await pollOnce();
+        // Poll run status + live log until the process exits.
+        let status = null;
+        for (;;) {
+          await pollLog();
+          try {
+            status = await fetchStatus();
+          } catch (_) {
+            status = null; // transient; keep polling
+          }
+          if (status && status.known && status.done) break;
+          await new Promise(resolve => window.setTimeout(resolve, LOG_POLL_INTERVAL_MS));
+        }
 
         const finalLogText = lastTail && lastTail.exists
           ? (lastTail.output || '(log file exists but currently empty)')
           : '';
+        const processOutput = status.output || '';
 
-        if (result.success) {
+        if (status.exitCode === 0) {
           if (statusEl) {
-            statusEl.value = `✓ ${runScript} completed successfully.\n\n${finalLogText || result.output || ''}`;
+            statusEl.value = `✓ ${runScript} completed successfully.\n\n${finalLogText || processOutput}`;
           }
           if (rawViewer) {
             rawViewer.value = finalLogText
               ? `# Live log: ${runScript}\n\n${finalLogText}`
-              : (result.output || rawViewer.value);
+              : (processOutput || rawViewer.value);
           }
         } else {
+          const failureOutput = [finalLogText, processOutput, status.error].filter(Boolean).join('\n\n');
           if (statusEl) {
-            const failureOutput = [finalLogText, result.output, result.error].filter(Boolean).join('\n\n');
-            statusEl.value = `✗ ${runScript} failed (exit code ${result.exitCode}).\n\n${failureOutput}`;
+            statusEl.value = `✗ ${runScript} failed (exit code ${status.exitCode}).\n\n${failureOutput}`;
           }
           if (rawViewer) {
-            const failureOutput = [finalLogText, result.output, result.error].filter(Boolean).join('\n\n');
             rawViewer.value = `# Live log: ${runScript}\n\n${failureOutput}`;
           }
         }
       } catch (err) {
-        const wasStopped = err?.name === 'AbortError';
-        if (wasStopped) {
-          if (statusEl) statusEl.value = `Stopped ${runScript}.`;
-          if (rawViewer) {
-            rawViewer.value = `# Live log: ${runScript}\n\nRun stopped by user.`;
-          }
-        } else {
-          if (statusEl) statusEl.value = `Run failed: ${err.message}`;
-          if (rawViewer) {
-            rawViewer.value = `# Live log: ${runScript}\n\nRun failed: ${err.message}`;
-          }
+        if (statusEl) statusEl.value = `Run failed: ${err.message}`;
+        if (rawViewer) {
+          rawViewer.value = `# Live log: ${runScript}\n\nRun failed: ${err.message}`;
         }
       } finally {
-        if (pollTimer !== null) {
-          window.clearInterval(pollTimer);
-        }
-        if (pollFailedAtLeastOnce && !lastTail && rawViewer) {
-          rawViewer.value = `${rawViewer.value}\n\n(Tip: restart Vite dev server so /api/log-tail is active.)`;
-        }
         runBtn.disabled = false;
         runBtn.loading = false;
         if (stopBtn) stopBtn.disabled = true;
-        if (currentRunController === runController) {
-          currentRunController = null;
+        if (currentRunScript === runScript) {
           currentRunScript = null;
         }
       }
@@ -332,12 +329,9 @@ function wireButtons(container, prefix, getBinder, getOriginal, setOriginal, sch
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ script: currentRunScript }),
         });
+        // The status poller in the run handler observes the process exit.
       } catch (_) {
-        // Keep stop flow best-effort: abort client-side request even if stop API fails.
-      }
-
-      if (currentRunController) {
-        currentRunController.abort();
+        // Best-effort: the run poller will still report the final state.
       }
     });
   }

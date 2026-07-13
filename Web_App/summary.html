@@ -7,9 +7,13 @@
           <sl-button variant="primary" id="summary-save-btn"><sl-icon name="floppy"></sl-icon></sl-button>
           <sl-button variant="primary" id="summary-reload-btn"><sl-icon name="trash"></sl-icon></sl-button>
           <sl-button variant="primary" id="summary-run-btn"><sl-icon name="play-fill"></sl-icon></sl-button>
+          <sl-button variant="primary" id="summary-stop-btn" disabled><sl-icon name="stop-fill"></sl-icon></sl-button>
         </div>
         <div class="config-field"><sl-input id="summary-chunk_summary_model" data-config-key="CHUNK_SUMMARY_MODEL" label="Chunk Summary Model" type="text"></sl-input></div>
-        <div class="config-field"><sl-input id="summary-testingmode" data-config-key="TESTINGMODE" label="Testing Mode" type="text"></sl-input></div>
+        <div class="config-field"><sl-input id="summary-testingmode" data-config-key="TESTINGMODE" label="Testing Mode (empty = full run)" type="number" min="1"></sl-input></div>
+        <div class="config-field"><sl-input id="summary-summary_max_workers" data-config-key="SUMMARY_MAX_WORKERS" label="Max Workers" type="number" min="1"></sl-input></div>
+        <div class="config-field"><sl-radio-group id="summary-resume_summaries" data-config-key="RESUME_SUMMARIES" size="small" label="Resume Summaries" name="summary_resume_summaries" value="true"><sl-radio value="true">True</sl-radio><sl-radio value="false">False</sl-radio></sl-radio-group></div>
+        <div class="config-field"><sl-input id="summary-summary_flush_every" data-config-key="SUMMARY_FLUSH_EVERY" label="Flush Every N Chunks" type="number" min="1"></sl-input></div>
         <div class="section-divider"><hr><span>Chunk Summary</span><hr></div>
         <div class="config-field"><sl-radio-group id="summary-enable_chunk_summary" data-config-key="ENABLE_CHUNK_SUMMARY" size="small" label="Enable Chunk Summary" name="summary_enable_chunk_summary" value="true"><sl-radio value="true">True</sl-radio><sl-radio value="false">False</sl-radio></sl-radio-group></div>
         <div class="config-field"><sl-input id="summary-chunk_summary_size" data-config-key="CHUNK_SUMMARY_SIZE" label="Chunk Summary Size (tokens)" type="number" min="1"></sl-input></div>
