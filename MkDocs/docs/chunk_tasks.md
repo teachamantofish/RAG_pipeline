@@ -1,4 +1,18 @@
-
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/chunk_tasks.md
+type: reference
+title: chunk_tasks
+name: chunk_tasks
+description: 1. Create a `chunk_markdown.py` file.
+resource: /topomorph/apps/rag-master/MkDocs/docs/chunk_tasks.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 1084
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # Archive planning tasks file
 
 

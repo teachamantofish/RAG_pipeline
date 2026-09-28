@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/sql_cmds.md
+type: reference
+title: sql_cmds
+name: sql_cmds
+description: 'I don''t know SQL or db mgmt., so I''m storing examples here:'
+resource: /topomorph/apps/rag-master/MkDocs/docs/sql_cmds.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 408
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # List of useful queries
 
 I don't know SQL or db mgmt., so I'm storing examples here: 

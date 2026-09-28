@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/code_splitting_thoughts.md
+type: reference
+title: code_splitting_thoughts
+name: code_splitting_thoughts
+description: I asked several agents what my approach should be with respect to long code examples. I've decided to generate a code example chunk summary via an LLM agent and double the size of that summary in hopes of enhancing retrieval.
+resource: /topomorph/apps/rag-master/MkDocs/docs/code_splitting_thoughts.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 802
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # Splitting long code into chunks
 
 I asked several agents what my approach should be with respect to long code examples. I've decided to generate a code example chunk summary via an LLM agent and double the size of that summary in hopes of enhancing retrieval. 

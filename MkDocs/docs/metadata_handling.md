@@ -1,5 +1,18 @@
-
-
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/metadata_handling.md
+type: reference
+title: metadata_handling
+name: metadata_handling
+description: 'Strategy question about what to include in the embedding:'
+resource: /topomorph/apps/rag-master/MkDocs/docs/metadata_handling.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 943
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 Strategy question about what to include in the embedding: 
 
 Chunks have metadata. And the file that I'm chunking also has metadata. I have a question about what I should include in the chunk and what I should just save to the vector database separately. 

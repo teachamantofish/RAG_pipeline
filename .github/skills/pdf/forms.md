@@ -1,3 +1,18 @@
+---
+id: C:/GIT/harness-root/apps/rag-master/.github/skills/pdf/forms.md
+type: reference
+title: forms
+name: forms
+description: '**CRITICAL: You MUST complete these steps in order. Do not skip ahead to writing code.**'
+resource: /harness-root/apps/rag-master/.github/skills/pdf/forms.md
+resource_root: C:/GIT
+author: brogers
+tags: [harness-root, apps, rag-master, .github, pdf]
+domain: tools
+tokens: 2885
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 **CRITICAL: You MUST complete these steps in order. Do not skip ahead to writing code.**
 
 If you need to fill out a PDF form, first check to see if the PDF has fillable form fields. Run this script from this file's directory:

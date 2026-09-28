@@ -1,3 +1,18 @@
+---
+id: C:/GIT/harness-root/apps/rag-master/.github/skills/pdf/reference.md
+type: reference
+title: reference
+name: reference
+description: This document contains advanced PDF processing features, detailed examples, and additional libraries not covered in the main skill instructions.
+resource: /harness-root/apps/rag-master/.github/skills/pdf/reference.md
+resource_root: C:/GIT
+author: brogers
+tags: [harness-root, apps, rag-master, .github, pdf]
+domain: tools
+tokens: 4070
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # PDF Processing Advanced Reference
 
 This document contains advanced PDF processing features, detailed examples, and additional libraries not covered in the main skill instructions.

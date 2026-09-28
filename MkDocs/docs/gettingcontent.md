@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/gettingcontent.md
+type: reference
+title: gettingcontent
+name: gettingcontent
+description: '**Done**.'
+resource: /topomorph/apps/rag-master/MkDocs/docs/gettingcontent.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 609
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # Getting content
 
 **Done**.

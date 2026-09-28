@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/Web_App/plan.md
+type: plan
+title: Web App
+name: plan
+description: Rebuild only the **chunk phase UI** as a reusable pattern for later tabs, while keeping **non-config Python code untouched**. The plan introduces a UI schema sidecar in `Web_App/config/`, modular chunk JS in `Web_App/js/`, and scoped CSS in `Web_App/css/` so index-level duplication drops and CDN/script loading is centralized once. Chunk controls become strongly bound to `chunkerconfig` values through a **parser → binder → strict validator** pipeline, with **minimal-diff write-back** to preserve comments/order/spacing in the Python config. Help text is shown via per-field **?** icons using one shared modal, sourced from curated schema descriptions. **Browser/Vite is primary** for this phase, with tests proving every rendered chunk control is mapped to a config key (or explicitly read-only/derived).
+resource: /topomorph/apps/rag-master/Web_App/plan.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, web-app]
+domain: tools
+tokens: 3920
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # Plan: Chunk Tab Config-Driven UI
 
 > **Status:** DRAFT — approved decisions locked, ready for implementation.

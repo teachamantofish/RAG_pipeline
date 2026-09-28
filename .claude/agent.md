@@ -1,18 +1,22 @@
 ---
-type: reference
-title: agent reference
+id: C:/GIT/topomorph/apps/rag-master/.claude/agent.md
+type: agent
+title: Claude agent file
+name: claude-rules-file
 description: ''
-resource: /harness-root/apps/rag-master/.claude/agent.md
-tags:
-- harness-root
-- apps
-- rag-master
-- .claude
+resource: /topomorph/apps/rag-master/.claude/agent.md
+resource_root: C:/GIT
 author: brogers
-generated:
-  by: human:brogers
-  at: '2026-08-15T22:45:11-04:00'
-memory: null
+tags: [topomorph, apps, rag-master, .claude]
+domain: tools
+tokens: 4
+generated: {by: 'human:brogers', at: '2026-08-15T22:45:11-04:00'}
+okf_version: '0.2'
+skills: []
+tools: []
+disallowedTools: []
+model: ''
+worker_model: ''
+color: ''
 ---
-
 # Agent Notes

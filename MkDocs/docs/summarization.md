@@ -1,4 +1,18 @@
-
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/summarization.md
+type: reference
+title: summarization
+name: summarization
+description: For this RAG pipeline, Is there any rationale for separating the chunking steps from summarization? Right now it happens altogether in the same file and one process. Are there benefits to chunking first and then summarizing the chunks later?
+resource: /topomorph/apps/rag-master/MkDocs/docs/summarization.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 1895
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 For this RAG pipeline, Is there any rationale for separating the chunking steps from summarization? Right now it happens altogether in the same file and one process. Are there benefits to chunking first and then summarizing the chunks later? 
 
 ==============

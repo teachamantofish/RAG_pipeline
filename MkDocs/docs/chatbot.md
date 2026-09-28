@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/MkDocs/docs/chatbot.md
+type: reference
+title: chatbot
+name: chatbot
+description: Uses LLamaIndex
+resource: /topomorph/apps/rag-master/MkDocs/docs/chatbot.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master, mkdocs, docs]
+domain: tools
+tokens: 861
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # Local Chatbot
 
 

@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/IMPROVEMENT_PLAN.md
+type: plan
+title: Rag Master
+name: IMPROVEMENT_PLAN
+description: 'Date: 2026-07-07'
+resource: /topomorph/apps/rag-master/IMPROVEMENT_PLAN.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master]
+domain: tools
+tokens: 8507
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # RAG Pipeline — Analysis & Improvement Plan
 
 > **Implementation status (2026-07-07):** the plan below has been implemented on this branch.

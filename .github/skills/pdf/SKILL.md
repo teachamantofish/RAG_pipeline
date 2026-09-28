@@ -1,9 +1,21 @@
 ---
+id: C:/GIT/harness-root/apps/rag-master/.github/skills/pdf/SKILL.md
+type: skill
+title: pdf
 name: pdf
 description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
+resource: /harness-root/apps/rag-master/.github/skills/pdf/SKILL.md
+resource_root: C:/GIT
+author: brogers
+tags: [harness-root, apps, rag-master, .github, pdf]
+domain: tools
+tokens: 1963
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+allowed-tools: []
+disallowed-tools: []
 license: Proprietary. LICENSE.txt has complete terms
 ---
-
 # PDF Processing Guide
 
 ## Overview

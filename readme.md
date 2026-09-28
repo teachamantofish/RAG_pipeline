@@ -1,3 +1,18 @@
+---
+id: C:/GIT/topomorph/apps/rag-master/readme.md
+type: project-readme
+title: rag-master readme
+name: rag-master-readme
+description: '1. Configure the run in `run_settings.py` (data dir `CWD`, `LOG_DIR`, and the `METADATA` block — `PARSER` selects the crawler: `crawlweb`, `crawlpdf`, or `crawlgit`). The `RAG_DATA_ROOT` / `RAG_LOG_DIR` env vars override the paths for other machines.'
+resource: /topomorph/apps/rag-master/readme.md
+resource_root: C:/GIT
+author: brogers
+tags: [topomorph, apps, rag-master]
+domain: tools
+tokens: 4015
+generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
+okf_version: '0.2'
+---
 # Running the pipeline (current state)
 
 1. Configure the run in `run_settings.py` (data dir `CWD`, `LOG_DIR`, and the `METADATA` block — `PARSER` selects the crawler: `crawlweb`, `crawlpdf`, or `crawlgit`). The `RAG_DATA_ROOT` / `RAG_LOG_DIR` env vars override the paths for other machines.
