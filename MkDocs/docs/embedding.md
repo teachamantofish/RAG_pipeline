@@ -7,7 +7,7 @@ description: 'models:'
 resource: /topomorph/apps/rag-master/MkDocs/docs/embedding.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, mkdocs, docs]
+tags: [topomorph, apps, rag-master, mkdocs, docs, "embeddings", "pgvector", "parquet", "performance-analysis"]
 domain: tools
 tokens: 3768
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

@@ -7,7 +7,7 @@ description: Might do later.
 resource: /topomorph/apps/rag-master/MkDocs/docs/unusedideas.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, mkdocs, docs]
+tags: [topomorph, apps, rag-master, mkdocs, docs, "text-chunking", "metadata-management"]
 domain: tools
 tokens: 665
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

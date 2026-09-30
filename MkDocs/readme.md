@@ -7,7 +7,7 @@ description: 'TODO:'
 resource: /topomorph/apps/rag-master/MkDocs/readme.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, mkdocs]
+tags: [topomorph, apps, rag-master, mkdocs, "user-interface"]
 domain: tools
 tokens: 43
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

@@ -7,7 +7,7 @@ description: '1. Configure the run in `run_settings.py` (data dir `CWD`, `LOG_DI
 resource: /topomorph/apps/rag-master/readme.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master]
+tags: [topomorph, apps, rag-master, "retrieval-augmented-generation", "data-pipelines", "text-chunking", "embeddings", "pgvector"]
 domain: tools
 tokens: 4015
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

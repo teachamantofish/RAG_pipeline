@@ -7,7 +7,7 @@ description: Add UI for configuration of each step
 resource: /topomorph/apps/rag-master/MkDocs/docs/todo.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, mkdocs, docs]
+tags: [topomorph, apps, rag-master, mkdocs, docs, "user-interface", "context-management"]
 domain: tools
 tokens: 301
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

@@ -7,7 +7,7 @@ description: pip install pgvector
 resource: /topomorph/apps/rag-master/MkDocs/docs/vector.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, mkdocs, docs]
+tags: [topomorph, apps, rag-master, mkdocs, docs, "pgvector", "data-pipelines"]
 domain: tools
 tokens: 682
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

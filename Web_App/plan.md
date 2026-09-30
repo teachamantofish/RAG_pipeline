@@ -7,7 +7,7 @@ description: Rebuild only the **chunk phase UI** as a reusable pattern for later
 resource: /topomorph/apps/rag-master/Web_App/plan.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, web-app]
+tags: [topomorph, apps, rag-master, web-app, "configuration-driven-ui", "input-validation", "software-testing"]
 domain: tools
 tokens: 3920
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

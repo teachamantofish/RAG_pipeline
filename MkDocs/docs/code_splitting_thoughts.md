@@ -7,7 +7,7 @@ description: I asked several agents what my approach should be with respect to l
 resource: /topomorph/apps/rag-master/MkDocs/docs/code_splitting_thoughts.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master, mkdocs, docs]
+tags: [topomorph, apps, rag-master, mkdocs, docs, "text-chunking", "semantic-retrieval", "text-summarization"]
 domain: tools
 tokens: 802
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}

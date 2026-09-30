@@ -7,7 +7,7 @@ description: 'Date: 2026-07-07'
 resource: /topomorph/apps/rag-master/IMPROVEMENT_PLAN.md
 resource_root: C:/GIT
 author: brogers
-tags: [topomorph, apps, rag-master]
+tags: [topomorph, apps, rag-master, "data-pipelines", "embeddings", "performance-analysis", "security-review", "software-testing"]
 domain: tools
 tokens: 8507
 generated: {by: 'human:brogers', at: '2026-09-10T14:43:17-04:00'}
