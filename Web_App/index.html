@@ -42,7 +42,7 @@
 
   <main class="main">    
     <sl-tab-group id="workflow-tabs">
-      <sl-tab slot="nav" panel="source">RAG Feeds</sl-tab>
+      <sl-tab slot="nav" panel="source">Run Settings</sl-tab>
       <sl-tab slot="nav" panel="crawl">Crawl Web</sl-tab>
       <sl-tab slot="nav" panel="crawl_pdf">Crawl PDF</sl-tab>
       <sl-tab slot="nav" panel="clean">Clean</sl-tab>
@@ -85,433 +85,72 @@
   </sl-dialog>
 </main>
 </body>
-<script type="module" src="js/app-config.js"></script>
-<script src="js/app-bridge.js"></script>
-<script src="js/datatables.js"></script>
-<script src="js/util.js"></script>
 <script>
-// Tab file mapping
-const tabFiles = {
-  source: 'source.html',
-  crawl: 'crawl.html',
-  crawl_pdf: 'crawl_pdf.html',
-  clean: 'clean.html',
-  chunk: 'chunk.html',
-  summary: 'summary.html',
-  training_data: 'training_data.html',
-  embed: 'embed.html',
-  vector: 'vector.html'
+// Tab registry: HTML fragment, init module, and the init function it exports.
+const tabs = {
+  source: { file: 'source.html', module: './js/source/source-init.js', init: 'initSourceTab' },
+  crawl: { file: 'crawl.html', module: './js/crawl/crawl-init.js', init: 'initCrawlTab' },
+  crawl_pdf: { file: 'crawl_pdf.html', module: './js/crawl-pdf/crawl-pdf-init.js', init: 'initCrawlPdfTab' },
+  clean: { file: 'clean.html', module: './js/clean/clean-init.js', init: 'initCleanTab' },
+  chunk: { file: 'chunk.html', module: './js/chunk/chunk-init.js', init: 'initChunkTab' },
+  summary: { file: 'summary.html', module: './js/summary/summary-init.js', init: 'initSummaryTab' },
+  training_data: { file: 'training_data.html' },
+  embed: { file: 'embed.html', module: './js/embed/embed-init.js', init: 'initEmbedTab' },
+  vector: { file: 'vector.html', module: './js/vector/vector-init.js', init: 'initVectorTab' },
 };
-
-// Python config file mapping for each tab
-const tabConfigFiles = {
-  crawl: './Get_and_Chunk/config/crawlconfig.py',
-  crawl_pdf: './Get_and_Chunk/config/crawlpdfconfig.py',
-  clean: './Get_and_Chunk/config/cleanconfig.py',
-  chunk: './Get_and_Chunk/config/chunkerconfig.py',
-  summary: './Get_and_Chunk/config/summaryconfig.py',
-  embed: './VectorDB/config/embedconfig.py',
-  vector: './VectorDB/config/vectorconfig.py'
-};
-
-// Which tabs should attempt to auto-load a config file.
-// By default derive from the keys of tabConfigFiles so only tabs
-// that have a mapped config will be auto-loaded. Exclude 'source'
-// because the Source tab loads an HTML fragment that renders its
-// own data table (no textarea/pywebview load required).
-const configTabsToAutoLoad = Object.keys(tabConfigFiles).filter(t => t !== 'source');
-const isHttpProtocol = window.location.protocol === 'http:' || window.location.protocol === 'https:';
-
-function hasPywebviewApi() {
-  if (window.AppBridge && typeof window.AppBridge.hasPywebviewApi === 'function') {
-    return window.AppBridge.hasPywebviewApi('load_file');
-  }
-  return false;
-}
-
-function isPywebviewRuntime() {
-  if (window.AppBridge && typeof window.AppBridge.isPywebviewRuntime === 'function') {
-    return window.AppBridge.isPywebviewRuntime();
-  }
-  return window.__PYWEBVIEW_RUNTIME__ === true;
-}
-
-// Source tab helpers are defined in web/js/datatables.js
-
-function resolvePathForHttp(path) {
-  if (/^(?:https?:)?\/\//.test(path)) return path;
-  if (path.startsWith('/')) return path;
-  if (isHttpProtocol) {
-    return new URL(path, window.location.href).pathname;
-  }
-  return path;
-}
 
 function loadTab(tab) {
-  const file = tabFiles[tab];
-  const sectionId = `tab-content-${tab}`;
-  const section = document.getElementById(sectionId);
-  
-  if (!file) return;
+  const entry = tabs[tab];
+  const section = document.getElementById(`tab-content-${tab}`);
+  if (!entry || !section) return;
 
-  const fileUrl = (() => {
-    if (/^(?:https?:)?\/\//.test(file)) return file;
-    if (file.startsWith('/')) return file;
-    return file.replace(/^\.\//, '');
-  })();
-  
-  // Only fetch HTML if the section is empty (not already loaded)
-  if (!section.innerHTML.trim()) {
-    fetch(fileUrl)
-      .then(response => {
-        if (!response.ok) throw new Error(`Failed to fetch ${fileUrl}: ${response.status}`);
-        return response.text();
-      })
-      .then(html => {
-        const looksLikeDocument = /<!doctype/i.test(html) || /<html[\s>]/i.test(html);
-        if (looksLikeDocument) {
-          console.error(`Expected fragment but received full document from ${fileUrl}. Check dev server settings or path.`);
-          section.innerHTML = `<div style="color:#c00">Unexpected document response from ${fileUrl}. Check the dev server configuration.</div>`;
-          return;
-        }
-        // Insert the HTML fragment
-        section.innerHTML = html;
-        if (tab === 'source') {
-          sourceTabState.initialized = false;
-          sourceTabState.waitAttempts = 0;
-        }
+  // Load each fragment once
+  if (section.dataset.loaded) return;
+  section.dataset.loaded = 'true';
 
-        // Execute any <script> tags found in the fragment.
-        // Strategy: load external scripts sequentially (skip if already present),
-        // then execute inline scripts in order.
-        const scripts = Array.from(section.querySelectorAll('script'));
-        const external = scripts.filter(s => s.src);
-        const inline = scripts.filter(s => !s.src);
-
-        // Remove original script tags from the fragment to avoid duplication
-        scripts.forEach(s => s.parentNode && s.parentNode.removeChild(s));
-
-        function loadExternalSequential(list, cb) {
-          if (!list.length) return cb();
-          const s = list.shift();
-          const src = s.getAttribute('src');
-          // Skip if already present on the page
-          if (document.querySelector(`script[src="${src}"]`)) {
-            return loadExternalSequential(list, cb);
-          }
-          const tag = document.createElement('script');
-          if (s.type) tag.type = s.type;
-          tag.src = src;
-          tag.async = false;
-          tag.onload = () => loadExternalSequential(list, cb);
-          tag.onerror = () => {
-            console.error('Failed to load script', src);
-            loadExternalSequential(list, cb);
-          };
-          document.head.appendChild(tag);
-        }
-
-        loadExternalSequential(external.slice(), () => {
-          // If running inside pywebview, preload the CSV via the pywebview API
-          // and set it on a global variable that the fragment can read.
-          (async function preparePywebviewPreload() {
-            if (hasPywebviewApi()) {
-              try {
-                const sourceTable = window.SourceTable;
-                const defaults = sourceTable && typeof sourceTable.getConfig === 'function'
-                  ? sourceTable.getConfig()
-                  : (sourceTable && sourceTable.defaults) || {};
-                let configPath = defaults.csvPath || null;
-                let preloadKey = defaults.preloadedKey || null;
-
-                if (window.AppConfig && typeof window.AppConfig.ready === 'function') {
-                  try {
-                    await window.AppConfig.ready();
-                    const metadataConfig = window.AppConfig.get('source.metadata');
-                    if (metadataConfig) {
-                      if (metadataConfig.csvPath) configPath = metadataConfig.csvPath;
-                      if (metadataConfig.preloadedKey) preloadKey = metadataConfig.preloadedKey;
-                    }
-                  } catch (configErr) {
-                    console.warn('[pywebview] unable to resolve Source tab config from AppConfig', configErr);
-                  }
-                }
-
-                if (!preloadKey && configPath) {
-                  const inferred = configPath.split(/[\\/]/).pop();
-                  preloadKey = inferred || null;
-                }
-
-
-                if (configPath) {
-                  const result = await window.AppBridge.loadFile(configPath);
-                  if (result && result.success && typeof result.content === 'string') {
-                    window.__PRELOADED_FILES = window.__PRELOADED_FILES || {};
-                    if (preloadKey) {
-                      window.__PRELOADED_FILES[preloadKey] = result.content;
-                      console.log(`[pywebview] preloaded ${preloadKey} into window.__PRELOADED_FILES`);
-                    }
-                  } else {
-                    console.warn('[pywebview] load_file returned no content or an error', result && result.error);
-                  }
-                }
-              } catch (err) {
-                console.warn('[pywebview] failed to preload Source tab CSV via API', err);
-              }
-            }
-
-            // Execute inline scripts after pywebview preload is prepared
-            inline.forEach(s => {
-              const tag = document.createElement('script');
-              if (s.type) tag.type = s.type;
-              tag.text = s.textContent;
-              document.body.appendChild(tag);
-            });
-
-            // Initialize tab-specific handlers
-            if (tab === 'source') {
-              import('./js/source/source-init.js').then(mod => {
-                const container = document.getElementById('tab-content-source');
-                if (container) mod.initSourceTab(container);
-              }).catch(err => console.error('[index] Failed to init source tab:', err));
-            }
-            if (tab === 'chunk') {
-              import('./js/chunk/chunk-init.js').then(mod => {
-                const container = document.getElementById('tab-content-chunk');
-                if (container) mod.initChunkTab(container);
-              }).catch(err => console.error('[index] Failed to init chunk tab:', err));
-            }
-            if (tab === 'crawl') {
-              import('./js/crawl/crawl-init.js').then(mod => {
-                const container = document.getElementById('tab-content-crawl');
-                if (container) mod.initCrawlTab(container);
-              }).catch(err => console.error('[index] Failed to init crawl tab:', err));
-            }
-            if (tab === 'crawl_pdf') {
-              import('./js/crawl-pdf/crawl-pdf-init.js').then(mod => {
-                const container = document.getElementById('tab-content-crawl_pdf');
-                if (container) mod.initCrawlPdfTab(container);
-              }).catch(err => console.error('[index] Failed to init crawl_pdf tab:', err));
-            }
-            if (tab === 'clean') {
-              import('./js/clean/clean-init.js').then(mod => {
-                const container = document.getElementById('tab-content-clean');
-                if (container) mod.initCleanTab(container);
-              }).catch(err => console.error('[index] Failed to init clean tab:', err));
-            }
-            if (tab === 'summary') {
-              import('./js/summary/summary-init.js').then(mod => {
-                const container = document.getElementById('tab-content-summary');
-                if (container) mod.initSummaryTab(container);
-              }).catch(err => console.error('[index] Failed to init summary tab:', err));
-            }
-            if (tab === 'embed') {
-              import('./js/embed/embed-init.js').then(mod => {
-                const container = document.getElementById('tab-content-embed');
-                if (container) mod.initEmbedTab(container);
-              }).catch(err => console.error('[index] Failed to init embed tab:', err));
-            }
-            if (tab === 'vector') {
-              import('./js/vector/vector-init.js').then(mod => {
-                const container = document.getElementById('tab-content-vector');
-                if (container) mod.initVectorTab(container);
-              }).catch(err => console.error('[index] Failed to init vector tab:', err));
-            }
-          })();
-        });
-      })
-      .catch(err => {
-        console.error(err);
-        section.innerHTML = `<div style="color:#c00">Error loading ${file}: ${err.message}</div>`;
-      });
-  }
-}
-
-// Legacy toggle functions removed — crawl/summary tabs now use config-binder.
-
-// API functions for loading config files
-async function loadConfigForTab(tabName, attempt = 0) {
-    console.log(`[DEBUG] Starting loadConfigForTab for: ${tabName} (attempt ${attempt + 1})`);
-    
-    console.log(`[DEBUG] Looking for ${tabName}config first...`);
-    let statusDisplay = document.getElementById(`${tabName}config`);
-    if (!statusDisplay) {
-        console.log(`[DEBUG] ${tabName}config not found, trying status-display...`);
-        statusDisplay = document.getElementById('status-display');
-    }
-    if (!statusDisplay && tabName === 'crawl') {
-        console.log(`[DEBUG] Also trying crawlconfig for crawl tab...`);
-        statusDisplay = document.getElementById('crawlconfig');
-    }
-    
-    if (!statusDisplay) {
-        console.log(`[DEBUG] No textarea found for ${tabName}, waiting...`);
-        setTimeout(() => loadConfigForTab(tabName), 500);
+  fetch(entry.file)
+    .then(response => {
+      if (!response.ok) throw new Error(`Failed to fetch ${entry.file}: ${response.status}`);
+      return response.text();
+    })
+    .then(html => {
+      const looksLikeDocument = /<!doctype/i.test(html) || /<html[\s>]/i.test(html);
+      if (looksLikeDocument) {
+        console.error(`Expected fragment but received full document from ${entry.file}. Check dev server settings or path.`);
+        section.innerHTML = `<div style="color:#c00">Unexpected document response from ${entry.file}. Check the dev server configuration.</div>`;
         return;
-    }
-    
-    console.log(`[DEBUG] Found textarea element: ${statusDisplay.id}`);
-    
-    const configFile = tabConfigFiles[tabName];
-    console.log(`[DEBUG] Config file mapping for ${tabName}: ${configFile}`);
-    if (!configFile) {
-        console.log(`[ERROR] No config file defined for tab: ${tabName}`);
-        statusDisplay.value = `No config file defined for ${tabName} tab`;
-        return;
-    }
-    
-    statusDisplay.placeholder = `Loading ${configFile}...`;
-    console.log(`[DEBUG] Set placeholder, now attempting to load...`);
-    
-    const pywebviewRuntime = isPywebviewRuntime();
-    const maxAttempts = window.__PYWEBVIEW_MAX_ATTEMPTS__ ?? 6;
-    const retryDelay = window.__PYWEBVIEW_RETRY_DELAY__ ?? 400;
-    const hasPy = hasPywebviewApi();
+      }
+      section.innerHTML = html;
 
-    if (pywebviewRuntime && !hasPy && attempt < maxAttempts) {
-        console.log('[DEBUG] pywebview runtime detected but API not ready. Retrying soon...');
-        statusDisplay.placeholder = `Waiting for pywebview... (retry ${attempt + 2}/${maxAttempts + 1})`;
-        setTimeout(() => loadConfigForTab(tabName, attempt + 1), retryDelay);
-        return;
-    }
-
-    let loadedSuccessfully = false;
-    let lastError = null;
-    
-    if (hasPy) {
-        try {
-        console.log(`[DEBUG] Calling AppBridge.loadFile(${configFile})`);
-        const result = await window.AppBridge.loadFile(configFile);
-            console.log(`[DEBUG] Load result:`, result);
-            
-            if (result && result.success) {
-                statusDisplay.value = result.content;
-                statusDisplay.placeholder = `${configFile} loaded successfully`;
-                console.log(`[SUCCESS] File loaded for ${tabName}: ${configFile}`);
-                loadedSuccessfully = true;
-            } else {
-                const errorDetail = result && result.error ? result.error : 'Unknown error';
-                console.warn(`[WARN] pywebview load failed for ${configFile}: ${errorDetail}`);
-                lastError = new Error(errorDetail);
-            }
-        } catch (error) {
-            console.warn(`[WARN] pywebview load threw for ${configFile}:`, error);
-            lastError = error;
-        }
-    }
-    
-    if (!loadedSuccessfully) {
-        if (isHttpProtocol) {
-            try {
-                const configUrl = resolvePathForHttp(configFile);
-                console.log(`[DEBUG] Fetching config via HTTP: ${configUrl}`);
-                const response = await fetch(configUrl);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                const text = await response.text();
-                statusDisplay.value = text;
-                statusDisplay.placeholder = `${configFile} loaded successfully`;
-                console.log(`[SUCCESS] File fetched for ${tabName}: ${configUrl}`);
-                loadedSuccessfully = true;
-            } catch (fetchError) {
-                console.error(`[ERROR] Unable to fetch ${configFile}:`, fetchError);
-                lastError = fetchError;
-                if (pywebviewRuntime && attempt < maxAttempts) {
-                    statusDisplay.placeholder = `Waiting for pywebview... (retry ${attempt + 2}/${maxAttempts + 1})`;
-                    setTimeout(() => loadConfigForTab(tabName, attempt + 1), retryDelay);
-                    return;
-                }
-            }
-        } else if (!hasPy) {
-            lastError = new Error('pywebview API not available and HTTP fetch unsupported for this protocol');
-        }
-    }
-    
-    if (!loadedSuccessfully) {
-        const message = lastError ? lastError.message : 'Unknown failure';
-        statusDisplay.value = `Failed to load ${configFile}: ${message}`;
-        statusDisplay.placeholder = '';
-    }
-}
-
-// Legacy functions for backward compatibility
-async function testAPI() {
-    return loadConfigForTab('crawl');
-}
-
-function reloadConfigFile() {
-    // Determine which tab is currently active
-    const activeTab = document.querySelector('sl-tab[active]');
-    const tabName = activeTab ? activeTab.getAttribute('panel') : 'crawl';
-    console.log(`Manually reloading config for tab: ${tabName}`);
-    loadConfigForTab(tabName);
-}
-
-function initializeCrawlConfig() {
-    console.log('Initializing crawl config...');
-    setTimeout(() => loadConfigForTab('crawl'), 100);
+      if (!entry.module) return;
+      return import(entry.module).then(mod => mod[entry.init](section));
+    })
+    .catch(err => {
+      console.error(`[index] Failed to load ${tab} tab:`, err);
+      delete section.dataset.loaded; // allow a retry on the next tab show
+      section.innerHTML = `<div style="color:#c00">Error loading ${entry.file}: ${err.message}</div>`;
+    });
 }
 
 // Listen for Shoelace tab change events
 const workflowTabs = document.getElementById('workflow-tabs');
-const getActivePanelName = target => {
-  if (!target) return null;
-  if (target.activeTab && target.activeTab.panel) return target.activeTab.panel;
-  if (typeof target.getActiveTab === 'function') {
-    const active = target.getActiveTab();
-    if (active && active.panel) return active.panel;
-  }
-  return null;
-};
 
 const handleTabChange = event => {
   const detail = event.detail || {};
-  const tab =
-    detail.name ||
-    (detail.tab && detail.tab.panel) ||
-    (detail.panel && detail.panel.name) ||
-    getActivePanelName(event.target);
-
+  const tab = detail.name || (workflowTabs.activeTab && workflowTabs.activeTab.panel);
   if (!tab) {
     console.warn('[WARN] Unable to resolve tab name from event', event);
     return;
   }
-
   loadTab(tab);
-  if (tab === 'source') loadSourceTab();
-  
-  // Schema-driven config tabs now self-load via their tab init modules.
-  // Keep legacy loader disabled to avoid conflicting I/O paths.
-  if (!configTabsToAutoLoad.includes(tab)) {
-    console.log(`[DEBUG] Skipping config load for tab: ${tab}`);
-  }
 };
 
 if (workflowTabs) {
-  workflowTabs.addEventListener('sl-change', handleTabChange);
   workflowTabs.addEventListener('sl-tab-show', handleTabChange);
-  window.addEventListener('pywebviewready', () => {
-    const activePanel = getActivePanelName(workflowTabs);
-    if (!activePanel) return;
-
-    if (configTabsToAutoLoad.includes(activePanel)) {
-      setTimeout(() => loadConfigForTab(activePanel), window.__PYWEBVIEW_RETRY_DELAY__ ?? 400);
-    }
-
-    if (activePanel === 'source') {
-      setTimeout(() => loadSourceTab(true), window.__PYWEBVIEW_RETRY_DELAY__ ?? 400);
-    }
-  });
 }
 
-// Load the first tab by default
-// Also preload the Source tab fragment so it doesn't wait for a user click
+// Load the first tab by default, and preload Crawl
 loadTab('source');
 loadTab('crawl');
-setTimeout(() => loadSourceTab(), 100);
-// Also attempt to auto-load the default tab's config if it's in the list
-// Legacy config preloading intentionally disabled for schema-driven tabs.
 </script>
 </html>
-

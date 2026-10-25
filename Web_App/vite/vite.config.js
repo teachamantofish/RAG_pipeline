@@ -7,13 +7,8 @@ import { spawn } from 'child_process'
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url))
 const repoRoot = path.resolve(projectRoot, '..')
-// '/pipeline/' serves data files (metadata CSVs) that live at the repo root.
-// A previous version pointed this at <repo>/pipeline, which does not exist.
-const pipelineDir = repoRoot
 const getAndChunkDir = path.resolve(projectRoot, '..', 'Get_and_Chunk')
 const vectorDBDir = path.resolve(projectRoot, '..', 'VectorDB')
-const appPathsPath = path.resolve(projectRoot, 'config', 'paths.json')
-const appPaths = JSON.parse(fs.readFileSync(appPathsPath, 'utf8'))
 const backupsRoot = path.resolve(projectRoot, 'config', 'backups')
 const activeScriptProcesses = new Map()
 // Retains the last run's state per script for /api/run-status polling.
@@ -119,7 +114,7 @@ function createBackupSnapshot(targetPath, callback) {
 
 /**
  * Generic file proxy factory for serving files from a mapped directory.
- * @param {string} urlPrefix - URL path prefix (e.g. '/pipeline/' or '/Get_and_Chunk/').
+ * @param {string} urlPrefix - URL path prefix (e.g. '/Get_and_Chunk/').
  * @param {string} baseDir - Absolute directory to serve from.
  * @param {string} pluginName - Vite plugin name.
  * @param {string[]} [allowedExts] - Servable file extensions (default: .py/.json/.csv).
@@ -248,18 +243,6 @@ function createWriteProxy(urlPrefix, baseDir, pluginName, allowedPatterns) {
       })
     },
   }
-}
-
-function pipelineFileProxy() {
-  // Repo-root data files (metadata CSVs) only.
-  return createFileProxy('/pipeline/', pipelineDir, 'pipeline-file-proxy', ['.csv'])
-}
-
-function pipelineWriteProxy() {
-  // Lets the Source tab save selected rows next to the metadata CSV.
-  return createWriteProxy('/pipeline/', pipelineDir, 'pipeline-write-proxy', [
-    /^[\w.-]+\.csv$/,
-  ])
 }
 
 function getAndChunkFileProxy() {
@@ -713,8 +696,6 @@ export default defineConfig({
   appType: 'mpa',
   plugins: [
     FullReload(['**/*.html']), // reload on ANY html change
-    pipelineFileProxy(),
-    pipelineWriteProxy(),
     getAndChunkFileProxy(),
     getAndChunkWriteProxy(),
     vectorDBFileProxy(),
@@ -726,13 +707,10 @@ export default defineConfig({
     createLogTailApi(),
     copyStaticBuildResources(),
   ],
-  define: {
-    __APP_PATHS__: JSON.stringify(appPaths),
-  },
   server: {
     port: 5173,
     watch: { usePolling: true, interval: 100 }, // fixes Windows/FS watchers
-    fs: { allow: [projectRoot, pipelineDir, getAndChunkDir, vectorDBDir] },
+    fs: { allow: [projectRoot, getAndChunkDir, vectorDBDir] },
   },
   build: { outDir: './build', emptyOutDir: true },
   test: {

@@ -3,9 +3,7 @@
  */
 
 const RUN_SETTINGS_HTTP_URL = '/api/run-settings';
-const RUN_SETTINGS_PYWEBVIEW_PATH = '../run_settings.py';
 const RUN_SETTINGS_DEFAULT_HTTP_URL = '/config/defaults/run_settings.py';
-const RUN_SETTINGS_DEFAULT_PYWEBVIEW_PATH = '../Web_App/config/defaults/run_settings.py';
 
 const METADATA_KEYS = [
   'ID',
@@ -174,57 +172,19 @@ function applyValuesToUi(container, parsed) {
   }
 }
 
-function canUsePywebviewApi(methodName) {
-  if (window.AppBridge && typeof window.AppBridge.hasPywebviewApi === 'function') {
-    return window.AppBridge.hasPywebviewApi(methodName);
-  }
-  const candidate = window.pywebview;
-  return !!(candidate && candidate.api && typeof candidate.api[methodName] === 'function');
-}
-
 async function fetchRunSettingsText() {
-  if (canUsePywebviewApi('load_file')) {
-    const result = window.AppBridge && typeof window.AppBridge.loadFile === 'function'
-      ? await window.AppBridge.loadFile(RUN_SETTINGS_PYWEBVIEW_PATH)
-      : await window.pywebview.api.load_file(RUN_SETTINGS_PYWEBVIEW_PATH);
-    if (!result || result.success !== true || typeof result.content !== 'string') {
-      throw new Error((result && result.error) || 'pywebview load_file failed');
-    }
-    return result.content;
-  }
-
   const resp = await fetch(RUN_SETTINGS_HTTP_URL, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.text();
 }
 
 async function fetchRunSettingsDefaultsText() {
-  if (canUsePywebviewApi('load_file')) {
-    const result = window.AppBridge && typeof window.AppBridge.loadFile === 'function'
-      ? await window.AppBridge.loadFile(RUN_SETTINGS_DEFAULT_PYWEBVIEW_PATH)
-      : await window.pywebview.api.load_file(RUN_SETTINGS_DEFAULT_PYWEBVIEW_PATH);
-    if (!result || result.success !== true || typeof result.content !== 'string') {
-      throw new Error((result && result.error) || 'pywebview load_file failed for defaults');
-    }
-    return result.content;
-  }
-
   const resp = await fetch(RUN_SETTINGS_DEFAULT_HTTP_URL, { cache: 'no-store' });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.text();
 }
 
 async function saveRunSettingsText(text) {
-  if (canUsePywebviewApi('save_file')) {
-    const result = window.AppBridge && typeof window.AppBridge.saveFile === 'function'
-      ? await window.AppBridge.saveFile(RUN_SETTINGS_PYWEBVIEW_PATH, text)
-      : await window.pywebview.api.save_file(RUN_SETTINGS_PYWEBVIEW_PATH, text);
-    if (!result || result.success !== true) {
-      throw new Error((result && result.error) || 'pywebview save_file failed');
-    }
-    return;
-  }
-
   const resp = await fetch(RUN_SETTINGS_HTTP_URL, {
     method: 'PUT',
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },

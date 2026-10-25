@@ -5,7 +5,7 @@
  * Creates an initializer for any tab that follows the schema-driven
  * load → bind → save/reload pattern established by chunk-init.js.
  *
- * No pywebview dependency — all I/O uses standard HTTP fetch.
+ * All I/O uses standard HTTP fetch.
  */
 
 import { parseConfig } from './config-parser.js';
